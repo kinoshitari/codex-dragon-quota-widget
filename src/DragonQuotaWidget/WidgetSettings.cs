@@ -1,0 +1,103 @@
+using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace DragonQuotaWidget;
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum WidgetMode { Quota, FiveHourQuota, Summary, Today, Conversation }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum LeftClickDisplayMode { Interaction, QuotaInfo }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum TokenTimeRange { Today, Last24Hours }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum InteractionSoundSet { Duck, Effect1 }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum SummaryTimeRange
+{
+    Last7Days,
+    Last30Days,
+    AllTime,
+    // Preserve compatibility with settings saved by earlier builds.
+    Week = Last7Days,
+    Month = Last30Days
+}
+
+public sealed class WidgetSettings
+{
+    private const int CurrentSchemaVersion = 2;
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    public WidgetMode Mode { get; set; } = WidgetMode.Quota;
+    public LeftClickDisplayMode LeftClickMode { get; set; } = LeftClickDisplayMode.Interaction;
+    public int SettingsSchemaVersion { get; set; }
+    public TokenTimeRange TokenTimeRange { get; set; } = TokenTimeRange.Today;
+    public SummaryTimeRange SummaryTimeRange { get; set; } = SummaryTimeRange.Last7Days;
+    public bool AttachToCodex { get; set; }
+    public bool StartWithCodex { get; set; } = true;
+    public bool ShowInfoPanel { get; set; }
+    public bool LockPosition { get; set; }
+    public bool AlwaysOnTop { get; set; } = true;
+    public bool MinimizeOnClose { get; set; }
+    public bool SoundEnabled { get; set; } = true;
+    public InteractionSoundSet SoundSet { get; set; } = InteractionSoundSet.Duck;
+    public double SoundVolume { get; set; } = 0.55;
+    public double ResetInteractionLockSeconds { get; set; } = 3;
+    public double InfoPanelDisplaySeconds { get; set; } = 5;
+    public bool ShowCodexActivityBubble { get; set; } = true;
+    public double Scale { get; set; } = 0.9;
+    public double? Left { get; set; }
+    public double? Top { get; set; }
+
+    public static WidgetSettings Load()
+    {
+        try
+        {
+            var path = GetSettingsPath();
+            var settings = File.Exists(path)
+                ? JsonSerializer.Deserialize<WidgetSettings>(File.ReadAllText(path), JsonOptions) ?? new WidgetSettings()
+                : new WidgetSettings();
+            if (settings.SettingsSchemaVersion < CurrentSchemaVersion)
+            {
+                // Version 2 changes the default from a permanently visible,
+                // Codex-attached panel to a freely positioned character whose
+                // information panel appears only when needed.
+                settings.ShowInfoPanel = false;
+                settings.AttachToCodex = false;
+                settings.SettingsSchemaVersion = CurrentSchemaVersion;
+            }
+
+            settings.SoundVolume = Math.Clamp(settings.SoundVolume, 0d, 1d);
+            settings.ShowInfoPanel = false;
+            settings.ResetInteractionLockSeconds = Math.Clamp(settings.ResetInteractionLockSeconds, 1d, 15d);
+            settings.InfoPanelDisplaySeconds = Math.Clamp(settings.InfoPanelDisplaySeconds, 2d, 30d);
+            settings.Scale = Math.Clamp(settings.Scale, 0.5d, 1.8d);
+            return settings;
+        }
+        catch { return new WidgetSettings(); }
+    }
+
+    public void Save()
+    {
+        try
+        {
+            var path = GetSettingsPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+        }
+        catch { }
+    }
+
+    private static string GetSettingsPath() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "CodexDragonQuotaWidget",
+        "settings.json");
+}

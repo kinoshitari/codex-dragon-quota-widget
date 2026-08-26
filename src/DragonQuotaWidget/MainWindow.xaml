@@ -1,0 +1,208 @@
+<Window x:Class="DragonQuotaWidget.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="傻龙插件"
+        Width="390" Height="440"
+        MinWidth="134" MinHeight="150"
+        WindowStyle="None" ResizeMode="NoResize"
+        AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" Topmost="True"
+        SnapsToDevicePixels="True"
+        Loaded="Window_Loaded"
+        Closing="Window_Closing">
+    <Window.Resources>
+        <LinearGradientBrush x:Key="PanelBrush" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#F52A2149" Offset="0" />
+            <GradientStop Color="#F2251C43" Offset="0.55" />
+            <GradientStop Color="#F13A2D66" Offset="1" />
+        </LinearGradientBrush>
+        <SolidColorBrush x:Key="AccentBrush" Color="#FFBEB3FF" />
+        <SolidColorBrush x:Key="MutedBrush" Color="#FFB9B3D6" />
+        <Style x:Key="IconButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Margin" Value="3,0,0,0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Foreground" Value="#FFD8D1F3" />
+            <Setter Property="Background" Value="#245F53A6" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}" CornerRadius="12">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#596F62B4" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Opacity" Value="0.72" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="ModeButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="27" />
+            <Setter Property="Padding" Value="7,0" />
+            <Setter Property="Margin" Value="0,0,3,0" />
+            <Setter Property="Foreground" Value="#FFB9B3D6" />
+            <Setter Property="Background" Value="#1FFFFFFF" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="FontSize" Value="10.5" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}" CornerRadius="13.5">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#3AFFFFFF" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="RootGrid">
+        <Grid.ContextMenu>
+            <ContextMenu>
+                <MenuItem Header="刷新数据" Click="RefreshMenuItem_Click" />
+                <Separator />
+                <MenuItem Header="左键展示模式">
+                    <MenuItem x:Name="InteractionDisplayModeMenuItem" Header="互动模式" IsCheckable="True" Click="InteractionDisplayModeMenuItem_Click" />
+                    <MenuItem x:Name="QuotaInfoDisplayModeMenuItem" Header="额度信息模式" IsCheckable="True" Click="QuotaInfoDisplayModeMenuItem_Click" />
+                </MenuItem>
+                <MenuItem Header="显示额度信息" Click="ShowInfoMenuItem_Click" />
+                <MenuItem Header="每周额度模式" Click="QuotaMenuItem_Click" />
+                <MenuItem Header="5h 额度模式" Click="FiveHourQuotaMenuItem_Click" />
+                <MenuItem x:Name="SummaryMenuItem" Header="过去 7 天 Token 模式" Click="SummaryMenuItem_Click" />
+                <MenuItem x:Name="TodayMenuItem" Header="今日 Token 模式" Click="TodayMenuItem_Click" />
+                <MenuItem Header="本轮对话模式" Click="ConversationMenuItem_Click" />
+                <Separator />
+                <MenuItem x:Name="LockPositionMenuItem" Header="固定位置" IsCheckable="True" Click="LockPositionMenuItem_Click" />
+                <MenuItem x:Name="AttachMenuItem" Header="贴靠 Codex 窗口" IsCheckable="True" Click="AttachMenuItem_Click" />
+                <MenuItem Header="缩小" Click="SmallerMenuItem_Click" />
+                <MenuItem Header="放大" Click="LargerMenuItem_Click" />
+                <MenuItem Header="设置…" Click="SettingsMenuItem_Click" />
+                <Separator />
+                <MenuItem Header="退出挂件" Click="ExitMenuItem_Click" />
+            </ContextMenu>
+        </Grid.ContextMenu>
+
+        <Grid x:Name="DataPanel" Width="292" Height="210" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8,10,0,0" Opacity="1" Panel.ZIndex="3">
+            <Border Background="{StaticResource PanelBrush}" BorderBrush="#667F70C7" BorderThickness="1" CornerRadius="28" Padding="18,14,14,12">
+                <Border.Effect>
+                    <DropShadowEffect Color="#7A171128" BlurRadius="24" ShadowDepth="6" Opacity="0.62" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="23" />
+                        <RowDefinition Height="30" />
+                        <RowDefinition Height="46" />
+                        <RowDefinition Height="16" />
+                        <RowDefinition Height="39" />
+                        <RowDefinition Height="16" />
+                    </Grid.RowDefinitions>
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="#FF8AE6C0" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBlock x:Name="TitleText" Grid.Column="1" Text="Codex 额度" Foreground="#FFF8F6FF" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="2" Orientation="Horizontal">
+                            <Button Style="{StaticResource IconButtonStyle}" Content="▯" ToolTip="隐藏信息框，仅保留立绘" Click="HideInfoButton_Click" />
+                            <Button Style="{StaticResource IconButtonStyle}" Content="⚙" ToolTip="打开设置" Click="SettingsButton_Click" />
+                            <Button x:Name="AttachButton" Style="{StaticResource IconButtonStyle}" Content="◎" ToolTip="贴靠/取消贴靠 Codex 窗口" Click="AttachButton_Click" />
+                            <Button Style="{StaticResource IconButtonStyle}" Content="×" ToolTip="关闭挂件" Click="CloseButton_Click" />
+                        </StackPanel>
+                    </Grid>
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button x:Name="QuotaModeButton" Style="{StaticResource ModeButtonStyle}" Content="每周" Click="QuotaModeButton_Click" />
+                        <Button x:Name="FiveHourQuotaModeButton" Style="{StaticResource ModeButtonStyle}" Content="5h" Click="FiveHourQuotaModeButton_Click" />
+                        <Button x:Name="SummaryModeButton" Style="{StaticResource ModeButtonStyle}" Content="7 天" Click="SummaryModeButton_Click" />
+                        <Button x:Name="TodayModeButton" Style="{StaticResource ModeButtonStyle}" Content="今日 Token" Click="TodayModeButton_Click" />
+                        <Button x:Name="ConversationModeButton" Style="{StaticResource ModeButtonStyle}" Content="本轮" Click="ConversationModeButton_Click" />
+                    </StackPanel>
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="MainValueText" Text="--" Foreground="White" FontSize="31" FontWeight="Bold" VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="1" Margin="10,5,0,0" VerticalAlignment="Center">
+                            <TextBlock x:Name="MainLabelText" Text="剩余额度" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock x:Name="MainSubText" Text="左键或右键刷新" Foreground="{StaticResource MutedBrush}" FontSize="10.5" Margin="0,2,0,0" />
+                        </StackPanel>
+                    </Grid>
+                    <Grid Grid.Row="3" VerticalAlignment="Center">
+                        <ProgressBar x:Name="UsageProgress" Height="6" Minimum="0" Maximum="100" Value="0" Foreground="#FFBEB3FF" Background="#35FFFFFF" BorderThickness="0" />
+                    </Grid>
+                    <Grid Grid.Row="4" Margin="0,5,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock x:Name="Detail1Label" Text="已使用" Foreground="{StaticResource MutedBrush}" FontSize="10" />
+                            <TextBlock x:Name="Detail1Value" Text="--" Foreground="#FFF8F6FF" FontSize="12.5" FontWeight="SemiBold" Margin="0,3,0,0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock x:Name="Detail2Label" Text="重置倒计时" Foreground="{StaticResource MutedBrush}" FontSize="10" />
+                            <TextBlock x:Name="Detail2Value" Text="--" Foreground="#FFF8F6FF" FontSize="12.5" FontWeight="SemiBold" Margin="0,3,0,0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock x:Name="Detail3Label" Text="重置时间" Foreground="{StaticResource MutedBrush}" FontSize="10" />
+                            <TextBlock x:Name="Detail3Value" Text="--" Foreground="#FFF8F6FF" FontSize="12.5" FontWeight="SemiBold" Margin="0,3,0,0" />
+                        </StackPanel>
+                    </Grid>
+                    <Grid Grid.Row="5">
+                        <TextBlock x:Name="StatusText" Text="正在读取本地 Codex 数据…" Foreground="#FF9E97C4" FontSize="9.5" VerticalAlignment="Bottom" TextTrimming="CharacterEllipsis" />
+                    </Grid>
+                </Grid>
+            </Border>
+            <Path Data="M 229,205 C 246,218 252,231 245,244 C 232,229 218,220 202,213 Z" Fill="#F13A2D66" HorizontalAlignment="Left" VerticalAlignment="Top" Panel.ZIndex="-1" />
+        </Grid>
+
+        <Grid x:Name="InteractionBubble" Width="170" Height="78" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="4,9,0,0"
+              Visibility="Collapsed" Opacity="0" IsHitTestVisible="False" Panel.ZIndex="5" RenderTransformOrigin="0.5,1">
+            <Grid.RenderTransform>
+                <ScaleTransform x:Name="BubbleScale" ScaleX="0.82" ScaleY="0.82" />
+            </Grid.RenderTransform>
+            <Border x:Name="BubbleBorder" Margin="0,0,0,14" Background="#F9FFFFFF" BorderBrush="#FF6D5FA9" BorderThickness="2" CornerRadius="24" Padding="14,8">
+                <Border.Effect>
+                    <DropShadowEffect Color="#55251D4C" BlurRadius="12" ShadowDepth="3" Opacity="0.5" />
+                </Border.Effect>
+                <TextBlock x:Name="InteractionBubbleText" Text="好模型" Foreground="#FF342651" FontSize="15" FontWeight="SemiBold"
+                           TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <Path x:Name="BubbleTail" Data="M 0,0 L 18,0 L 11,14 Z" Fill="#F9FFFFFF" Stroke="#FF6D5FA9" StrokeThickness="2" StrokeLineJoin="Round"
+                  Width="20" Height="16" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,32,0" />
+        </Grid>
+
+        <Border x:Name="DragonHost" Width="268" Height="300" HorizontalAlignment="Right" VerticalAlignment="Bottom" Background="Transparent" Cursor="Hand" Panel.ZIndex="2"
+                MouseLeftButtonDown="DragonHost_MouseLeftButtonDown" ToolTip="左键按所选模式互动或显示额度；右键可切换模式">
+            <Image Source="Assets/dragon-girl.png" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" IsHitTestVisible="False" RenderTransformOrigin="0.5,1">
+                <Image.RenderTransform>
+                    <TransformGroup>
+                        <ScaleTransform x:Name="DragonMirror" ScaleX="1" ScaleY="1" />
+                        <ScaleTransform x:Name="DragonSquash" ScaleX="1" ScaleY="1" />
+                        <TranslateTransform x:Name="DragonHop" Y="0" />
+                    </TransformGroup>
+                </Image.RenderTransform>
+            </Image>
+        </Border>
+    </Grid>
+</Window>

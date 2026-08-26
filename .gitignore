@@ -1,0 +1,23 @@
+# .NET build and publish outputs
+**/bin/
+**/obj/
+/dist/
+/.build-home/
+/.validation-deps/
+
+# IDE and local user state
+.vs/
+.idea/
+*.user
+*.suo
+
+# Diagnostics and local databases
+*.log
+*.db
+*.db-shm
+*.db-wal
+*-preview.local.png
+
+# OS files
+Thumbs.db
+.DS_Store

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>CodexDragonQuotaWidget</AssemblyName>
+    <RootNamespace>DragonQuotaWidget</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.1.0</Version>
+    <Authors>Local developer</Authors>
+    <Product>傻龙插件</Product>
+    <Title>傻龙插件</Title>
+    <Description>傻龙插件：本地显示 Codex/Work 额度、滚动 Token 与本轮对话统计。</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\dragon-girl.png" />
+    <Content Include="Assets\Sounds\*.mp3">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>
