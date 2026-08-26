@@ -25,8 +25,20 @@ public partial class MainWindow : Window
     private const double ArtBaseHeight = 300;
     private const int FiveHourWindowMinutes = 300;
     private const int WeeklyWindowMinutes = 7 * 24 * 60;
-    private readonly CodexUsageReader _reader = new();
+    private readonly CodexUsageReader _codexReader = new();
+    private readonly AntigravityUsageReader _agyReader = new();
     private readonly CodexActivityMonitor _activityMonitor = new();
+
+    private UsageSource SelectedSource
+    {
+        get
+        {
+            if (Application.Current.Properties["ForceUsageSource"] is UsageSource previewSource) return previewSource;
+            if (_settings.LeftClickMode == LeftClickDisplayMode.AgyQuota) return UsageSource.Agy;
+            if (_settings.LeftClickMode == LeftClickDisplayMode.CodexQuota) return UsageSource.Codex;
+            return _settings.UsageSource;
+        }
+    }
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly SemaphoreSlim _activityGate = new(1, 1);
     private readonly DispatcherTimer _anchorTimer;
@@ -42,7 +54,9 @@ public partial class MainWindow : Window
     private readonly bool _forceInteractionBubblePreview;
     private readonly MediaPlayer _pressAudio = new();
     private readonly MediaPlayer _releaseAudio = new();
-    private UsageSnapshot? _snapshot;
+    private UsageSnapshot? _codexSnapshot;
+    private UsageSnapshot? _agySnapshot;
+    private UsageSnapshot? SelectedSnapshot => SelectedSource == UsageSource.Agy ? _agySnapshot : _codexSnapshot;
     private bool _dragging;
     private bool _attachedToCodex;
     private bool _temporaryInfoPanelVisible;
@@ -128,7 +142,7 @@ public partial class MainWindow : Window
         ConfigureSounds();
         ApplyScale(_settings.Scale, persist: false);
         UpdateModeButtons();
-        if (_snapshot is not null) RenderSnapshot();
+        RenderSnapshot();
         if (!_settings.ShowCodexActivityBubble && _visibleBubbleVisual == BubbleVisual.Activity)
             HideInteractionBubble(immediate: true);
         else
@@ -231,13 +245,22 @@ public partial class MainWindow : Window
 
         try
         {
+            var source = SelectedSource;
+            var sourceLabel = source == UsageSource.Agy ? "AGY" : "Codex";
             if (manual)
             {
-                StatusText.Text = "正在刷新本地 Codex 数据…";
+                StatusText.Text = $"正在刷新本地 {sourceLabel} 数据…";
                 StatusDot.Fill = new SolidColorBrush(Color.FromRgb(255, 203, 107));
             }
-            _snapshot = await Task.Run(_reader.ReadSnapshot);
-            RenderSnapshot();
+            var snapshot = await Task.Run(() =>
+                source == UsageSource.Agy ? _agyReader.ReadSnapshot() : _codexReader.ReadSnapshot());
+            if (source == UsageSource.Agy)
+                _agySnapshot = snapshot;
+            else
+                _codexSnapshot = snapshot;
+
+            if (source == SelectedSource)
+                RenderSnapshot();
         }
         catch (Exception ex)
         {
@@ -297,46 +320,62 @@ public partial class MainWindow : Window
 
     private void RenderSnapshot()
     {
-        if (_snapshot is null)
+        var snapshot = SelectedSnapshot;
+        var sourceLabel = SelectedSource == UsageSource.Agy ? "AGY" : "Codex";
+        if (snapshot is null)
         {
+            TitleText.Text = $"{sourceLabel} 数据";
+            MainValueText.Text = "--";
+            MainLabelText.Text = "正在读取";
+            MainSubText.Text = $"等待 {sourceLabel} 数据刷新";
+            UsageProgress.Value = 0;
+            Detail1Label.Text = "输入";
+            Detail2Label.Text = "输出";
+            Detail3Label.Text = "缓存命中";
+            Detail1Value.Text = Detail2Value.Text = Detail3Value.Text = "--";
+            StatusText.Text = $"正在读取本地 {sourceLabel} 数据…";
             return;
         }
 
         if (_mode == WidgetMode.Quota)
         {
-            RenderQuota(_snapshot, WeeklyWindowMinutes, "每周额度消耗", "每周剩余额度");
+            RenderQuota(snapshot, WeeklyWindowMinutes, "每周额度", "每周剩余额度");
         }
         else if (_mode == WidgetMode.FiveHourQuota)
         {
-            RenderQuota(_snapshot, FiveHourWindowMinutes, "5h 额度剩余", "5h 剩余额度");
+            RenderQuota(snapshot, FiveHourWindowMinutes, "5h 额度", "5h 剩余额度");
         }
         else if (_mode == WidgetMode.Summary)
         {
-            RenderSummaryPeriod(_snapshot);
+            RenderSummaryPeriod(snapshot);
         }
         else if (_mode == WidgetMode.Today)
         {
-            RenderTokenPeriod(_snapshot);
+            RenderTokenPeriod(snapshot);
         }
         else
         {
-            RenderConversation(_snapshot);
+            RenderConversation(snapshot);
         }
 
-        var warning = string.IsNullOrWhiteSpace(_snapshot.Warning) ? string.Empty : $" · {_snapshot.Warning}";
-        StatusText.Text = $"本地刷新 {_snapshot.ReadAt:HH:mm:ss}{warning}";
+        var warning = string.IsNullOrWhiteSpace(snapshot.Warning) ? string.Empty : $" · {snapshot.Warning}";
+        StatusText.Text = $"本地 {sourceLabel} 刷新 {snapshot.ReadAt:HH:mm:ss}{warning}";
         StatusDot.Fill = new SolidColorBrush(Color.FromRgb(138, 230, 192));
     }
 
     private void RenderQuota(UsageSnapshot snapshot, int targetWindowMinutes, string title, string remainingLabel)
     {
-        TitleText.Text = title;
+        var source = SelectedSource;
+        var sourceLabel = source == UsageSource.Agy ? "AGY" : "Codex";
+        TitleText.Text = $"{sourceLabel} {title}";
         var window = SelectRateWindow(snapshot.RateLimits, targetWindowMinutes);
         if (window is null)
         {
             MainValueText.Text = "--";
             MainLabelText.Text = $"暂无 {FormatWindow(targetWindowMinutes)}额度快照";
-            MainSubText.Text = "产生一次 Codex 响应后再刷新";
+            MainSubText.Text = source == UsageSource.Agy
+                ? "暂无可用 AGY 额度快照"
+                : "产生一次 Codex 响应后再刷新";
             UsageProgress.Value = 0;
             Detail1Label.Text = "已使用";
             Detail1Value.Text = "--";
@@ -350,7 +389,7 @@ public partial class MainWindow : Window
         var remaining = Math.Clamp(100d - window.UsedPercent, 0d, 100d);
         MainValueText.Text = $"{remaining:0.#}%";
         MainLabelText.Text = remainingLabel;
-        MainSubText.Text = $"全局汇总 · {FormatWindow(window.WindowMinutes)}";
+        MainSubText.Text = $"{sourceLabel} 汇总 · {FormatWindow(window.WindowMinutes)}";
         UsageProgress.Value = remaining;
         Detail1Label.Text = "已使用";
         Detail1Value.Text = $"{window.UsedPercent:0.#}%";
@@ -370,63 +409,111 @@ public partial class MainWindow : Window
 
     private void RenderTokenPeriod(UsageSnapshot snapshot)
     {
-        var period = _settings.TokenTimeRange == TokenTimeRange.Last24Hours ? snapshot.Last24Hours : snapshot.Today;
-        var total = period.Total;
+        var source = SelectedSource;
+        var sourceLabel = source == UsageSource.Agy ? "AGY" : "Codex";
         var isRolling = _settings.TokenTimeRange == TokenTimeRange.Last24Hours;
-        TitleText.Text = isRolling ? "近 24 小时 Token" : $"{DateTime.Today:MM月dd日} Token";
-        MainValueText.Text = FormatTokens(total.TotalTokens);
-        MainLabelText.Text = "输入 + 输出";
-        MainSubText.Text = $"Work {FormatTokens(period.Work.TotalTokens)} · Codex {FormatTokens(period.Codex.TotalTokens)}";
-        UsageProgress.Value = total.CacheHitRate * 100d;
-        Detail1Label.Text = "输入";
-        Detail1Value.Text = FormatTokens(total.InputTokens);
-        Detail2Label.Text = "输出";
-        Detail2Value.Text = FormatTokens(total.OutputTokens);
-        Detail3Label.Text = "缓存命中";
-        Detail3Value.Text = $"{total.CacheHitRate * 100d:0.0}%";
+        var period = isRolling ? snapshot.Last24Hours : snapshot.Today;
+
+        TitleText.Text = isRolling ? $"{sourceLabel} 24h Token" : $"{sourceLabel} 今日 Token";
+
+        if (source == UsageSource.Agy)
+        {
+            var agy = period.Agy;
+            MainValueText.Text = FormatTokens(agy.TotalTokens);
+            MainLabelText.Text = "输入 + 输出";
+            MainSubText.Text = $"AGY 会话 · 缓存命中 {agy.CacheHitRate * 100d:0.0}%";
+            UsageProgress.Value = agy.CacheHitRate * 100d;
+            Detail1Label.Text = "输入";
+            Detail1Value.Text = FormatTokens(agy.InputTokens);
+            Detail2Label.Text = "输出";
+            Detail2Value.Text = FormatTokens(agy.OutputTokens);
+            Detail3Label.Text = "缓存命中";
+            Detail3Value.Text = $"{agy.CacheHitRate * 100d:0.0}%";
+        }
+        else
+        {
+            var total = period.Codex + period.Work;
+            MainValueText.Text = FormatTokens(total.TotalTokens);
+            MainLabelText.Text = "输入 + 输出";
+            MainSubText.Text = $"Work {FormatTokens(period.Work.TotalTokens)} · Codex {FormatTokens(period.Codex.TotalTokens)}";
+            UsageProgress.Value = total.CacheHitRate * 100d;
+            Detail1Label.Text = "输入";
+            Detail1Value.Text = FormatTokens(total.InputTokens);
+            Detail2Label.Text = "输出";
+            Detail2Value.Text = FormatTokens(total.OutputTokens);
+            Detail3Label.Text = "缓存命中";
+            Detail3Value.Text = $"{total.CacheHitRate * 100d:0.0}%";
+        }
     }
 
     private void RenderSummaryPeriod(UsageSnapshot snapshot)
     {
-        var (period, title) = _settings.SummaryTimeRange switch
+        var source = SelectedSource;
+        var sourceLabel = source == UsageSource.Agy ? "AGY" : "Codex";
+        var (period, baseTitle) = _settings.SummaryTimeRange switch
         {
-            SummaryTimeRange.Last30Days => (snapshot.Last30Days, "过去 30 天 Token"),
-            SummaryTimeRange.AllTime => (snapshot.AllTime, "总 Token 消耗"),
-            _ => (snapshot.Last7Days, "过去 7 天 Token")
+            SummaryTimeRange.Last30Days => (snapshot.Last30Days, "30天 Token"),
+            SummaryTimeRange.AllTime => (snapshot.AllTime, "总 Token"),
+            _ => (snapshot.Last7Days, "7天 Token")
         };
-        var total = period.Total;
-        TitleText.Text = title;
-        MainValueText.Text = FormatTokens(total.TotalTokens);
-        MainLabelText.Text = "输入 + 输出";
-        MainSubText.Text = $"Work {FormatTokens(period.Work.TotalTokens)} · Codex {FormatTokens(period.Codex.TotalTokens)}";
-        UsageProgress.Value = total.CacheHitRate * 100d;
-        Detail1Label.Text = "输入";
-        Detail1Value.Text = FormatTokens(total.InputTokens);
-        Detail2Label.Text = "输出";
-        Detail2Value.Text = FormatTokens(total.OutputTokens);
-        Detail3Label.Text = "缓存命中";
-        Detail3Value.Text = $"{total.CacheHitRate * 100d:0.0}%";
+
+        TitleText.Text = $"{sourceLabel} {baseTitle}";
+
+        if (source == UsageSource.Agy)
+        {
+            var agy = period.Agy;
+            MainValueText.Text = FormatTokens(agy.TotalTokens);
+            MainLabelText.Text = "输入 + 输出";
+            MainSubText.Text = $"AGY 会话 · 缓存命中 {agy.CacheHitRate * 100d:0.0}%";
+            UsageProgress.Value = agy.CacheHitRate * 100d;
+            Detail1Label.Text = "输入";
+            Detail1Value.Text = FormatTokens(agy.InputTokens);
+            Detail2Label.Text = "输出";
+            Detail2Value.Text = FormatTokens(agy.OutputTokens);
+            Detail3Label.Text = "缓存命中";
+            Detail3Value.Text = $"{agy.CacheHitRate * 100d:0.0}%";
+        }
+        else
+        {
+            var total = period.Codex + period.Work;
+            MainValueText.Text = FormatTokens(total.TotalTokens);
+            MainLabelText.Text = "输入 + 输出";
+            MainSubText.Text = $"Work {FormatTokens(period.Work.TotalTokens)} · Codex {FormatTokens(period.Codex.TotalTokens)}";
+            UsageProgress.Value = total.CacheHitRate * 100d;
+            Detail1Label.Text = "输入";
+            Detail1Value.Text = FormatTokens(total.InputTokens);
+            Detail2Label.Text = "输出";
+            Detail2Value.Text = FormatTokens(total.OutputTokens);
+            Detail3Label.Text = "缓存命中";
+            Detail3Value.Text = $"{total.CacheHitRate * 100d:0.0}%";
+        }
     }
 
     private void RenderConversation(UsageSnapshot snapshot)
     {
+        var source = SelectedSource;
+        var sourceLabel = source == UsageSource.Agy ? "AGY" : "Codex";
         var conversation = snapshot.CurrentConversation;
         if (conversation is null)
         {
-            TitleText.Text = "本轮对话 Token";
+            TitleText.Text = $"{sourceLabel} 本轮 Token";
             MainValueText.Text = "--";
             MainLabelText.Text = "暂无活动会话";
-            MainSubText.Text = "等待 Codex 写入会话事件";
+            MainSubText.Text = source == UsageSource.Agy ? "等待 AGY 写入会话事件" : "等待 Codex 写入会话事件";
             UsageProgress.Value = 0;
+            Detail1Label.Text = "输入";
+            Detail2Label.Text = "输出";
+            Detail3Label.Text = "缓存命中";
             Detail1Value.Text = Detail2Value.Text = Detail3Value.Text = "--";
             return;
         }
 
         var usage = conversation.Tokens;
-        TitleText.Text = "本轮对话 Token";
+        TitleText.Text = $"{sourceLabel} 本轮 Token";
         MainValueText.Text = FormatTokens(usage.TotalTokens);
         MainLabelText.Text = "输入 + 输出";
-        MainSubText.Text = $"{conversation.Surface} 模式 · {conversation.StartedAt.ToLocalTime():MM-dd HH:mm} 开始";
+        var surfaceLabel = source == UsageSource.Agy ? "AGY" : conversation.Surface.ToString();
+        MainSubText.Text = $"{surfaceLabel} 模式 · {conversation.StartedAt.ToLocalTime():MM-dd HH:mm} 开始";
         UsageProgress.Value = usage.CacheHitRate * 100d;
         Detail1Label.Text = "输入";
         Detail1Value.Text = FormatTokens(usage.InputTokens);
@@ -474,7 +561,7 @@ public partial class MainWindow : Window
 
     private void UpdateQuotaCountdown()
     {
-        if (_mode is not (WidgetMode.Quota or WidgetMode.FiveHourQuota) || _snapshot?.RateLimits is not { } limit) return;
+        if (_mode is not (WidgetMode.Quota or WidgetMode.FiveHourQuota) || SelectedSnapshot?.RateLimits is not { } limit) return;
         var targetWindowMinutes = _mode == WidgetMode.FiveHourQuota ? FiveHourWindowMinutes : WeeklyWindowMinutes;
         var window = SelectRateWindow(limit, targetWindowMinutes);
         if (window is null) return;
@@ -513,11 +600,12 @@ public partial class MainWindow : Window
         SummaryModeButton.Content = summaryLabel;
         SummaryMenuItem.Header = $"{summaryLabel} Token 模式";
         var tokenLabel = _settings.TokenTimeRange == TokenTimeRange.Last24Hours ? "24h Token" : "今日 Token";
-        TodayModeButton.Content = tokenLabel;
+        TodayModeButton.Content = _settings.TokenTimeRange == TokenTimeRange.Last24Hours ? "24h" : "今日";
         TodayMenuItem.Header = $"{tokenLabel} 模式";
         AttachButton.Content = _attachedToCodex ? "●" : "◎";
+        CodexQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.CodexQuota;
+        AgyQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.AgyQuota;
         InteractionDisplayModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.Interaction;
-        QuotaInfoDisplayModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.QuotaInfo;
         LockPositionMenuItem.IsChecked = _settings.LockPosition;
         AttachMenuItem.IsChecked = _attachedToCodex;
     }
@@ -543,8 +631,18 @@ public partial class MainWindow : Window
     private void SetLeftClickMode(LeftClickDisplayMode mode)
     {
         _settings.LeftClickMode = mode;
+        if (mode == LeftClickDisplayMode.CodexQuota)
+        {
+            _settings.UsageSource = UsageSource.Codex;
+        }
+        else if (mode == LeftClickDisplayMode.AgyQuota)
+        {
+            _settings.UsageSource = UsageSource.Agy;
+        }
         _settings.Save();
         UpdateModeButtons();
+        RenderSnapshot();
+        _ = RefreshAsync(true);
     }
 
     private void TogglePositionLock()
@@ -560,6 +658,7 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() != true) return;
         dialog.ApplyTo(_settings);
         ApplySettings();
+        _ = RefreshAsync(true);
     }
 
     private void DragonHost_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -600,15 +699,16 @@ public partial class MainWindow : Window
     private void CompleteDragonInteraction()
     {
         PlaySound(_releaseAudio);
-        if (_settings.LeftClickMode == LeftClickDisplayMode.QuotaInfo)
+        if (_settings.LeftClickMode is LeftClickDisplayMode.CodexQuota or LeftClickDisplayMode.AgyQuota)
         {
             ShowInfoPanelTemporarily();
+            _ = RefreshAsync(true);
         }
         else
         {
             ShowInteractionBubble();
+            _ = RefreshAsync(false);
         }
-        _ = RefreshAsync(true);
     }
 
     private void SuspendActivityBubbleForInteraction()
@@ -918,8 +1018,9 @@ public partial class MainWindow : Window
     private void SummaryMenuItem_Click(object sender, RoutedEventArgs e) => SetMode(WidgetMode.Summary);
     private void TodayMenuItem_Click(object sender, RoutedEventArgs e) => SetMode(WidgetMode.Today);
     private void ConversationMenuItem_Click(object sender, RoutedEventArgs e) => SetMode(WidgetMode.Conversation);
+    private void CodexQuotaModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.CodexQuota);
+    private void AgyQuotaModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.AgyQuota);
     private void InteractionDisplayModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.Interaction);
-    private void QuotaInfoDisplayModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.QuotaInfo);
     private void HideInfoButton_Click(object sender, RoutedEventArgs e) => HideInfoPanel();
     private void ShowInfoMenuItem_Click(object sender, RoutedEventArgs e) => ShowInfoPanelTemporarily();
     private void LockPositionMenuItem_Click(object sender, RoutedEventArgs e) => TogglePositionLock();

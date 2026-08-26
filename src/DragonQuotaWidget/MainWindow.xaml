@@ -78,9 +78,10 @@
             <ContextMenu>
                 <MenuItem Header="刷新数据" Click="RefreshMenuItem_Click" />
                 <Separator />
-                <MenuItem Header="左键展示模式">
-                    <MenuItem x:Name="InteractionDisplayModeMenuItem" Header="互动模式" IsCheckable="True" Click="InteractionDisplayModeMenuItem_Click" />
-                    <MenuItem x:Name="QuotaInfoDisplayModeMenuItem" Header="额度信息模式" IsCheckable="True" Click="QuotaInfoDisplayModeMenuItem_Click" />
+                <MenuItem Header="左键模式 / 数据源">
+                    <MenuItem x:Name="CodexQuotaModeMenuItem" Header="Codex 额度" IsCheckable="True" Click="CodexQuotaModeMenuItem_Click" />
+                    <MenuItem x:Name="AgyQuotaModeMenuItem" Header="AGY 额度" IsCheckable="True" Click="AgyQuotaModeMenuItem_Click" />
+                    <MenuItem x:Name="InteractionDisplayModeMenuItem" Header="互动提示" IsCheckable="True" Click="InteractionDisplayModeMenuItem_Click" />
                 </MenuItem>
                 <MenuItem Header="显示额度信息" Click="ShowInfoMenuItem_Click" />
                 <MenuItem Header="每周额度模式" Click="QuotaMenuItem_Click" />
@@ -132,7 +133,7 @@
                         <Button x:Name="QuotaModeButton" Style="{StaticResource ModeButtonStyle}" Content="每周" Click="QuotaModeButton_Click" />
                         <Button x:Name="FiveHourQuotaModeButton" Style="{StaticResource ModeButtonStyle}" Content="5h" Click="FiveHourQuotaModeButton_Click" />
                         <Button x:Name="SummaryModeButton" Style="{StaticResource ModeButtonStyle}" Content="7 天" Click="SummaryModeButton_Click" />
-                        <Button x:Name="TodayModeButton" Style="{StaticResource ModeButtonStyle}" Content="今日 Token" Click="TodayModeButton_Click" />
+                        <Button x:Name="TodayModeButton" Style="{StaticResource ModeButtonStyle}" Content="今日" Click="TodayModeButton_Click" />
                         <Button x:Name="ConversationModeButton" Style="{StaticResource ModeButtonStyle}" Content="本轮" Click="ConversationModeButton_Click" />
                     </StackPanel>
                     <Grid Grid.Row="2">
@@ -169,7 +170,7 @@
                         </StackPanel>
                     </Grid>
                     <Grid Grid.Row="5">
-                        <TextBlock x:Name="StatusText" Text="正在读取本地 Codex 数据…" Foreground="#FF9E97C4" FontSize="9.5" VerticalAlignment="Bottom" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="StatusText" Text="正在读取本地数据…" Foreground="#FF9E97C4" FontSize="9.5" VerticalAlignment="Bottom" TextTrimming="CharacterEllipsis" />
                     </Grid>
                 </Grid>
             </Border>

@@ -75,6 +75,10 @@ public partial class App : System.Windows.Application
             {
                 Properties["ForceWidgetMode"] = previewMode;
             }
+            if (e.Args.Length >= 4 && Enum.TryParse<UsageSource>(e.Args[3], true, out var previewSource))
+            {
+                Properties["ForceUsageSource"] = previewSource;
+            }
         }
 
         if (e.Args.Length >= 2 && e.Args[0].Equals("--render-preview-character-only", StringComparison.OrdinalIgnoreCase))

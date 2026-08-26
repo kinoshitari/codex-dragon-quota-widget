@@ -35,6 +35,7 @@ public static class Program
             RunTest("Quota: Multiline stdout with preamble logs parsed correctly", TestQuotaParsing_MultilineStdoutWithPreamble);
             RunTest("Quota: Caching and process fan-out prevention", TestQuotaCommandRunner_Caching);
             RunTest("Models: Existing Codex/Work calculation and serialization compatibility", TestUsageModels_CodexCompatibility);
+            RunTest("Settings: Legacy QuotaInfo mode maps to Codex quota", TestSettings_LegacyQuotaInfoAlias);
 
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Results: {_passedTests} passed, {_failedTests} failed.");
@@ -583,5 +584,15 @@ public static class Program
 
         // 4. UsageSurface Enum
         AssertEqual(UsageSurface.Agy, Enum.Parse<UsageSurface>("Agy"), "UsageSurface must include Agy");
+    }
+
+    private static void TestSettings_LegacyQuotaInfoAlias()
+    {
+        var legacyMode = JsonSerializer.Deserialize<LeftClickDisplayMode>("\"QuotaInfo\"");
+        AssertEqual(LeftClickDisplayMode.CodexQuota, legacyMode, "Legacy QuotaInfo must remain the Codex quota mode");
+
+        var settings = new WidgetSettings();
+        AssertEqual(LeftClickDisplayMode.Interaction, settings.LeftClickMode, "Fresh installs keep interaction as the default left-click mode");
+        AssertEqual(UsageSource.Codex, settings.UsageSource, "Interaction mode defaults its remembered data source to Codex");
     }
 }

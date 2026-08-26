@@ -66,6 +66,22 @@
                                 <ColumnDefinition Width="155" />
                             </Grid.ColumnDefinitions>
                             <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                                <TextBlock Text="左键点击行为" FontSize="14" FontWeight="SemiBold" Foreground="#FF342D52" />
+                                <TextBlock Text="Codex 额度、AGY 额度或互动提示" FontSize="11" Foreground="#FF8C84A7" Margin="0,3,0,0" />
+                            </StackPanel>
+                            <ComboBox x:Name="LeftClickModeComboBox" Grid.Column="1" Height="32" VerticalContentAlignment="Center" SelectedIndex="0">
+                                <ComboBoxItem Content="Codex 额度" />
+                                <ComboBoxItem Content="AGY 额度" />
+                                <ComboBoxItem Content="互动提示" />
+                            </ComboBox>
+                        </Grid>
+                        <Separator Margin="0,14,0,12" Background="#FFE7E2F2" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="155" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
                                 <TextBlock Text="Token 统计区间" FontSize="14" FontWeight="SemiBold" Foreground="#FF342D52" />
                                 <TextBlock Text="自然日或滚动 24 小时" FontSize="11" Foreground="#FF8C84A7" Margin="0,3,0,0" />
                             </StackPanel>

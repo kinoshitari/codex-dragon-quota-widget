@@ -10,6 +10,12 @@ public partial class SettingsWindow : Window
     {
         InitializeComponent();
         ScaleSlider.Value = settings.Scale;
+        LeftClickModeComboBox.SelectedIndex = settings.LeftClickMode switch
+        {
+            LeftClickDisplayMode.CodexQuota => 0,
+            LeftClickDisplayMode.AgyQuota => 1,
+            _ => 2
+        };
         TokenTimeRangeComboBox.SelectedIndex = settings.TokenTimeRange == TokenTimeRange.Last24Hours ? 1 : 0;
         SummaryTimeRangeComboBox.SelectedIndex = settings.SummaryTimeRange switch
         {
@@ -35,6 +41,20 @@ public partial class SettingsWindow : Window
     public void ApplyTo(WidgetSettings settings)
     {
         settings.Scale = ScaleSlider.Value;
+        settings.LeftClickMode = LeftClickModeComboBox.SelectedIndex switch
+        {
+            0 => LeftClickDisplayMode.CodexQuota,
+            1 => LeftClickDisplayMode.AgyQuota,
+            _ => LeftClickDisplayMode.Interaction
+        };
+        if (settings.LeftClickMode == LeftClickDisplayMode.CodexQuota)
+        {
+            settings.UsageSource = UsageSource.Codex;
+        }
+        else if (settings.LeftClickMode == LeftClickDisplayMode.AgyQuota)
+        {
+            settings.UsageSource = UsageSource.Agy;
+        }
         settings.TokenTimeRange = TokenTimeRangeComboBox.SelectedIndex == 1 ? TokenTimeRange.Last24Hours : TokenTimeRange.Today;
         settings.SummaryTimeRange = SummaryTimeRangeComboBox.SelectedIndex switch
         {

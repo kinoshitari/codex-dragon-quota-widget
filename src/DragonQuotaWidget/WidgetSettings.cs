@@ -8,7 +8,21 @@ namespace DragonQuotaWidget;
 public enum WidgetMode { Quota, FiveHourQuota, Summary, Today, Conversation }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum LeftClickDisplayMode { Interaction, QuotaInfo }
+public enum LeftClickDisplayMode
+{
+    CodexQuota,
+    AgyQuota,
+    Interaction,
+    // Backward compatibility for v2 settings
+    QuotaInfo = CodexQuota
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum UsageSource
+{
+    Codex,
+    Agy
+}
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum TokenTimeRange { Today, Last24Hours }
@@ -29,7 +43,7 @@ public enum SummaryTimeRange
 
 public sealed class WidgetSettings
 {
-    private const int CurrentSchemaVersion = 2;
+    private const int CurrentSchemaVersion = 3;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -38,6 +52,7 @@ public sealed class WidgetSettings
 
     public WidgetMode Mode { get; set; } = WidgetMode.Quota;
     public LeftClickDisplayMode LeftClickMode { get; set; } = LeftClickDisplayMode.Interaction;
+    public UsageSource UsageSource { get; set; } = UsageSource.Codex;
     public int SettingsSchemaVersion { get; set; }
     public TokenTimeRange TokenTimeRange { get; set; } = TokenTimeRange.Today;
     public SummaryTimeRange SummaryTimeRange { get; set; } = SummaryTimeRange.Last7Days;
@@ -65,13 +80,24 @@ public sealed class WidgetSettings
             var settings = File.Exists(path)
                 ? JsonSerializer.Deserialize<WidgetSettings>(File.ReadAllText(path), JsonOptions) ?? new WidgetSettings()
                 : new WidgetSettings();
-            if (settings.SettingsSchemaVersion < CurrentSchemaVersion)
+            if (settings.SettingsSchemaVersion < 2)
             {
                 // Version 2 changes the default from a permanently visible,
                 // Codex-attached panel to a freely positioned character whose
                 // information panel appears only when needed.
                 settings.ShowInfoPanel = false;
                 settings.AttachToCodex = false;
+            }
+            if (settings.SettingsSchemaVersion < CurrentSchemaVersion)
+            {
+                if (settings.LeftClickMode == LeftClickDisplayMode.CodexQuota)
+                {
+                    settings.UsageSource = UsageSource.Codex;
+                }
+                else if (settings.LeftClickMode == LeftClickDisplayMode.AgyQuota)
+                {
+                    settings.UsageSource = UsageSource.Agy;
+                }
                 settings.SettingsSchemaVersion = CurrentSchemaVersion;
             }
 
