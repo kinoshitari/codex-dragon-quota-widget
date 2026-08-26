@@ -37,6 +37,27 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        if (e.Args.Length >= 3 && (e.Args[0].Equals("--diagnostics-agy-root", StringComparison.OrdinalIgnoreCase) || e.Args[0].Equals("--diagnostics-agy-roots", StringComparison.OrdinalIgnoreCase)))
+        {
+            var roots = e.Args[1].Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(Path.GetFullPath).ToArray();
+            var snapshot = new AntigravityUsageReader(customRoots: roots).ReadSnapshot();
+            var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(Path.GetFullPath(e.Args[2]), json);
+            Shutdown();
+            return;
+        }
+
+        if (e.Args.Length >= 2 && e.Args[0].Equals("--diagnostics-agy", StringComparison.OrdinalIgnoreCase))
+        {
+            var roots = e.Args.Length >= 3 ? new[] { Path.GetFullPath(e.Args[1]) } : null;
+            var outputPath = e.Args.Length >= 3 ? Path.GetFullPath(e.Args[2]) : Path.GetFullPath(e.Args[1]);
+            var snapshot = new AntigravityUsageReader(customRoots: roots).ReadSnapshot();
+            var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(outputPath, json);
+            Shutdown();
+            return;
+        }
+
         if (e.Args.Length >= 3 && e.Args[0].Equals("--diagnostics-activity-root", StringComparison.OrdinalIgnoreCase))
         {
             var snapshot = new CodexActivityMonitor(Path.GetFullPath(e.Args[1])).Poll();
