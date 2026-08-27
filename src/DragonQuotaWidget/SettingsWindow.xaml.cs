@@ -31,7 +31,6 @@ public partial class SettingsWindow : Window
         ShowCodexActivityBubbleCheckBox.IsChecked = settings.ShowCodexActivityBubble;
         LockPositionCheckBox.IsChecked = settings.LockPosition;
         AlwaysOnTopCheckBox.IsChecked = settings.AlwaysOnTop;
-        AttachToCodexCheckBox.IsChecked = settings.AttachToCodex;
         StartWithCodexCheckBox.IsChecked = settings.StartWithCodex;
         MinimizeOnCloseCheckBox.IsChecked = settings.MinimizeOnClose;
         UpdateSizeText();
@@ -68,10 +67,8 @@ public partial class SettingsWindow : Window
         settings.ResetInteractionLockSeconds = ResetLockSlider.Value;
         settings.InfoPanelDisplaySeconds = InfoPanelDurationSlider.Value;
         settings.ShowCodexActivityBubble = ShowCodexActivityBubbleCheckBox.IsChecked == true;
-        settings.ShowInfoPanel = false;
         settings.LockPosition = LockPositionCheckBox.IsChecked == true;
         settings.AlwaysOnTop = AlwaysOnTopCheckBox.IsChecked == true;
-        settings.AttachToCodex = AttachToCodexCheckBox.IsChecked == true;
         settings.StartWithCodex = StartWithCodexCheckBox.IsChecked == true;
         settings.MinimizeOnClose = MinimizeOnCloseCheckBox.IsChecked == true;
     }

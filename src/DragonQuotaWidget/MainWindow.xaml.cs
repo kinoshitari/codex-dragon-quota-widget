@@ -34,14 +34,11 @@ public partial class MainWindow : Window
         get
         {
             if (Application.Current.Properties["ForceUsageSource"] is UsageSource previewSource) return previewSource;
-            if (_settings.LeftClickMode == LeftClickDisplayMode.AgyQuota) return UsageSource.Agy;
-            if (_settings.LeftClickMode == LeftClickDisplayMode.CodexQuota) return UsageSource.Codex;
             return _settings.UsageSource;
         }
     }
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly SemaphoreSlim _activityGate = new(1, 1);
-    private readonly DispatcherTimer _anchorTimer;
     private readonly DispatcherTimer _activityTimer;
     private readonly DispatcherTimer _bubbleTimer;
     private readonly DispatcherTimer _countdownTimer;
@@ -58,7 +55,6 @@ public partial class MainWindow : Window
     private UsageSnapshot? _agySnapshot;
     private UsageSnapshot? SelectedSnapshot => SelectedSource == UsageSource.Agy ? _agySnapshot : _codexSnapshot;
     private bool _dragging;
-    private bool _attachedToCodex;
     private bool _temporaryInfoPanelVisible;
     private bool _activityInitialized;
     private bool _positionInitialized;
@@ -80,16 +76,7 @@ public partial class MainWindow : Window
         _forceCharacterOnlyPreview = Application.Current.Properties["ForceCharacterOnlyPreview"] is true;
         _forceInteractionBubblePreview = Application.Current.Properties["ForceInteractionBubblePreview"] is true;
         _mode = Application.Current.Properties["ForceWidgetMode"] is WidgetMode previewMode ? previewMode : _settings.Mode;
-        _attachedToCodex = _settings.AttachToCodex;
         _notifyIcon = CreateNotifyIcon();
-        _anchorTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(650) };
-        _anchorTimer.Tick += (_, _) =>
-        {
-            if (_attachedToCodex && !_dragging)
-            {
-                PositionNearCodex();
-            }
-        };
         _activityTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(900) };
         _activityTimer.Tick += async (_, _) => await PollCodexActivityAsync();
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
@@ -126,12 +113,10 @@ public partial class MainWindow : Window
     }
 
     private bool IsInfoPanelVisible => _forceInfoPanelPreview ||
-        (!_forceCharacterOnlyPreview && _temporaryInfoPanelVisible);
+        (!_forceCharacterOnlyPreview && (_settings.PinInfoPanel || _temporaryInfoPanelVisible));
 
     private void ApplySettings(bool persist = true)
     {
-        _settings.ShowInfoPanel = false;
-        _attachedToCodex = _settings.AttachToCodex;
         Topmost = _settings.AlwaysOnTop;
         DataPanel.BeginAnimation(OpacityProperty, null);
         DataPanel.Visibility = IsInfoPanelVisible ? Visibility.Visible : Visibility.Collapsed;
@@ -154,8 +139,19 @@ public partial class MainWindow : Window
     {
         if (!IsVisible) Show();
         WindowState = WindowState.Normal;
-        if (_attachedToCodex) PositionNearCodex(); else ClampToWorkArea();
+        _activityTimer.Start();
+        _countdownTimer.Start();
+        _refreshTimer.Start();
+        ClampToWorkArea();
+        UpdateDragonMirror();
         Activate();
+    }
+
+    public void ActivateFromExternalRequest()
+    {
+        RestoreFromTray();
+        ShowInfoPanelTemporarily();
+        _ = RefreshAsync(true);
     }
 
     private void ExitApplication()
@@ -170,32 +166,26 @@ public partial class MainWindow : Window
         if (visible)
         {
             if (!IsVisible) Show();
-            _anchorTimer.Start();
             _activityTimer.Start();
             _countdownTimer.Start();
             _refreshTimer.Start();
-            if (_attachedToCodex) PositionNearCodex();
+            ClampToWorkArea();
+            UpdateDragonMirror();
             await RefreshAsync(false);
         }
         else
         {
-            _anchorTimer.Stop();
-            _activityTimer.Stop();
-            _countdownTimer.Stop();
-            _infoPanelTimer.Stop();
-            _refreshTimer.Stop();
-            Hide();
+            // Codex detection can briefly disappear while its desktop window
+            // is minimized, recreated, or updated. The widget is independent
+            // once launched, so a host lifecycle change must not hide it.
+            RestoreActivityBubbleIfNeeded();
         }
     }
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         ApplySettings(persist: false);
-        if (_attachedToCodex)
-        {
-            PositionNearCodex();
-        }
-        else if (_settings.Left is not null && _settings.Top is not null)
+        if (_settings.Left is not null && _settings.Top is not null)
         {
             Left = _settings.Left.Value;
             Top = _settings.Top.Value;
@@ -207,9 +197,9 @@ public partial class MainWindow : Window
         }
 
         _positionInitialized = true;
+        UpdateDragonMirror();
 
         UpdateModeButtons();
-        _anchorTimer.Start();
         _activityTimer.Start();
         _countdownTimer.Start();
         _refreshTimer.Start();
@@ -602,26 +592,40 @@ public partial class MainWindow : Window
         var tokenLabel = _settings.TokenTimeRange == TokenTimeRange.Last24Hours ? "24h Token" : "今日 Token";
         TodayModeButton.Content = _settings.TokenTimeRange == TokenTimeRange.Last24Hours ? "24h" : "今日";
         TodayMenuItem.Header = $"{tokenLabel} 模式";
-        AttachButton.Content = _attachedToCodex ? "●" : "◎";
+        PinInfoPanelButton.Content = _settings.PinInfoPanel ? "◆" : "◇";
+        PinInfoPanelButton.ToolTip = _settings.PinInfoPanel
+            ? "取消固定额度提示框，恢复自动淡出"
+            : "固定额度提示框，使其不再自动淡出";
+        SourceToggleButton.Content = SelectedSource == UsageSource.Agy ? "AGY" : "Codex";
+        SourceToggleButton.ToolTip = SelectedSource == UsageSource.Agy
+            ? "当前显示 AGY；点击切换到 Codex"
+            : "当前显示 Codex；点击切换到 AGY";
         CodexQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.CodexQuota;
         AgyQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.AgyQuota;
         InteractionDisplayModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.Interaction;
         LockPositionMenuItem.IsChecked = _settings.LockPosition;
-        AttachMenuItem.IsChecked = _attachedToCodex;
+        PinInfoPanelMenuItem.IsChecked = _settings.PinInfoPanel;
     }
 
-    private void ToggleAttach()
+    private void TogglePinInfoPanel()
     {
-        _attachedToCodex = !_attachedToCodex;
-        _settings.AttachToCodex = _attachedToCodex;
-        if (_attachedToCodex) PositionNearCodex();
+        _settings.PinInfoPanel = !_settings.PinInfoPanel;
         _settings.Save();
         UpdateModeButtons();
+        if (_settings.PinInfoPanel)
+        {
+            ShowInfoPanelTemporarily();
+        }
+        else
+        {
+            _temporaryInfoPanelVisible = true;
+            HideTemporaryInfoPanel();
+        }
     }
 
     private void HideInfoPanel()
     {
-        _settings.ShowInfoPanel = false;
+        _settings.PinInfoPanel = false;
         _temporaryInfoPanelVisible = false;
         _infoPanelTimer.Stop();
         ApplySettings();
@@ -642,6 +646,23 @@ public partial class MainWindow : Window
         _settings.Save();
         UpdateModeButtons();
         RenderSnapshot();
+        _ = RefreshAsync(true);
+    }
+
+    private void ToggleUsageSource()
+    {
+        if (Application.Current.Properties["ForceUsageSource"] is UsageSource) return;
+        _settings.UsageSource = SelectedSource == UsageSource.Agy ? UsageSource.Codex : UsageSource.Agy;
+        if (_settings.LeftClickMode is LeftClickDisplayMode.CodexQuota or LeftClickDisplayMode.AgyQuota)
+        {
+            _settings.LeftClickMode = _settings.UsageSource == UsageSource.Agy
+                ? LeftClickDisplayMode.AgyQuota
+                : LeftClickDisplayMode.CodexQuota;
+        }
+        _settings.Save();
+        UpdateModeButtons();
+        RenderSnapshot();
+        ShowInfoPanelTemporarily();
         _ = RefreshAsync(true);
     }
 
@@ -679,8 +700,6 @@ public partial class MainWindow : Window
         }
 
         _dragging = true;
-        _attachedToCodex = false;
-        _settings.AttachToCodex = false;
         DragonHost.Cursor = Cursors.Hand;
         Mouse.OverrideCursor = Cursors.Hand;
         try { DragMove(); }
@@ -689,6 +708,7 @@ public partial class MainWindow : Window
             Mouse.OverrideCursor = null;
             _dragging = false;
             ClampToWorkArea();
+            UpdateDragonMirror();
             PersistPosition();
             UpdateModeButtons();
             PlayReleaseBounce();
@@ -854,7 +874,7 @@ public partial class MainWindow : Window
     {
         if (_forceCharacterOnlyPreview) return;
         HideInteractionBubble(immediate: true);
-        var wasVisible = _temporaryInfoPanelVisible;
+        var wasVisible = DataPanel.Visibility == Visibility.Visible && DataPanel.Opacity > 0;
         _infoPanelTimer.Stop();
         _temporaryInfoPanelVisible = true;
         DataPanel.Visibility = Visibility.Visible;
@@ -870,13 +890,17 @@ public partial class MainWindow : Window
             DataPanel.Opacity = 0;
             DataPanel.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)));
         }
-        _infoPanelTimer.Interval = TimeSpan.FromSeconds(_settings.InfoPanelDisplaySeconds);
-        _infoPanelTimer.Start();
+        if (!_settings.PinInfoPanel)
+        {
+            _infoPanelTimer.Interval = TimeSpan.FromSeconds(_settings.InfoPanelDisplaySeconds);
+            _infoPanelTimer.Start();
+        }
     }
 
     private void HideTemporaryInfoPanelImmediately()
     {
         _infoPanelTimer.Stop();
+        if (_settings.PinInfoPanel) return;
         if (!_temporaryInfoPanelVisible) return;
         DataPanel.BeginAnimation(OpacityProperty, null);
         _temporaryInfoPanelVisible = false;
@@ -889,6 +913,13 @@ public partial class MainWindow : Window
     private void HideTemporaryInfoPanel()
     {
         _infoPanelTimer.Stop();
+        if (_settings.PinInfoPanel)
+        {
+            DataPanel.BeginAnimation(OpacityProperty, null);
+            DataPanel.Visibility = Visibility.Visible;
+            DataPanel.Opacity = 1;
+            return;
+        }
         if (!_temporaryInfoPanelVisible) return;
         var fade = new DoubleAnimation(DataPanel.Opacity, 0, TimeSpan.FromMilliseconds(260));
         fade.Completed += (_, _) =>
@@ -936,7 +967,7 @@ public partial class MainWindow : Window
     {
         scale = Math.Clamp(Math.Round(scale, 1), 0.5, 1.8);
         _settings.Scale = scale;
-        var keepDragonAnchor = _positionInitialized && !_attachedToCodex &&
+        var keepDragonAnchor = _positionInitialized &&
             !double.IsNaN(Left) && !double.IsNaN(Top);
         var previousWidth = !double.IsNaN(Width) && Width > 0 ? Width : ActualWidth;
         var previousHeight = !double.IsNaN(Height) && Height > 0 ? Height : ActualHeight;
@@ -954,46 +985,49 @@ public partial class MainWindow : Window
         }
         if (persist) _settings.Save();
         if (!IsLoaded) return;
-        if (_attachedToCodex) PositionNearCodex();
-        else if (!double.IsNaN(Left) && !double.IsNaN(Top)) ClampToWorkArea();
-    }
-
-    private void PositionNearCodex()
-    {
-        if (TryGetCodexWindowRect(out var rect))
-        {
-            var matrix = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
-            var bottomRight = matrix.Transform(new Point(rect.Right, rect.Bottom));
-            var topLeft = matrix.Transform(new Point(rect.Left, rect.Top));
-            var windowWidth = !double.IsNaN(Width) && Width > 0 ? Width : ActualWidth;
-            var windowHeight = !double.IsNaN(Height) && Height > 0 ? Height : ActualHeight;
-            Left = Math.Max(topLeft.X, bottomRight.X - windowWidth - 14);
-            Top = Math.Max(topLeft.Y, bottomRight.Y - windowHeight - 14);
-            DragonMirror.ScaleX = 1;
-        }
-        else if (!CodexProcessMonitor.HasHostWindow())
-        {
-            PositionAtWorkAreaCorner();
-        }
+        if (!double.IsNaN(Left) && !double.IsNaN(Top)) ClampToWorkArea();
+        UpdateDragonMirror();
     }
 
     private void PositionAtWorkAreaCorner()
     {
-        var work = SystemParameters.WorkArea;
+        var work = GetCurrentWorkArea();
         var windowWidth = !double.IsNaN(Width) && Width > 0 ? Width : ActualWidth;
         var windowHeight = !double.IsNaN(Height) && Height > 0 ? Height : ActualHeight;
         Left = work.Right - windowWidth - 12;
         Top = work.Bottom - windowHeight - 12;
-        DragonMirror.ScaleX = 1;
+        UpdateDragonMirror();
     }
 
     private void ClampToWorkArea()
     {
-        var work = SystemParameters.WorkArea;
+        var work = GetCurrentWorkArea();
         var windowWidth = !double.IsNaN(Width) && Width > 0 ? Width : ActualWidth;
         var windowHeight = !double.IsNaN(Height) && Height > 0 ? Height : ActualHeight;
         Left = Math.Clamp(Left, work.Left, Math.Max(work.Left, work.Right - windowWidth));
         Top = Math.Clamp(Top, work.Top, Math.Max(work.Top, work.Bottom - windowHeight));
+        UpdateDragonMirror();
+    }
+
+    private void UpdateDragonMirror()
+    {
+        if (double.IsNaN(Left) || double.IsNaN(Width) || Width <= 0) return;
+        var work = GetCurrentWorkArea();
+        var dragonCenterX = Left + Width - ArtBaseWidth * _settings.Scale / 2d;
+        DragonMirror.ScaleX = WidgetPlacement.GetFacingScaleX(dragonCenterX, work.Left, work.Width);
+    }
+
+    private Rect GetCurrentWorkArea()
+    {
+        if (!IsLoaded || double.IsNaN(Left) || double.IsNaN(Top)) return SystemParameters.WorkArea;
+        var source = PresentationSource.FromVisual(this)?.CompositionTarget;
+        if (source is null) return SystemParameters.WorkArea;
+        var centerDip = new Point(Left + Math.Max(Width, ActualWidth) / 2d, Top + Math.Max(Height, ActualHeight) / 2d);
+        var centerDevice = source.TransformToDevice.Transform(centerDip);
+        var screen = WinForms.Screen.FromPoint(new Drawing.Point((int)Math.Round(centerDevice.X), (int)Math.Round(centerDevice.Y)));
+        var topLeft = source.TransformFromDevice.Transform(new Point(screen.WorkingArea.Left, screen.WorkingArea.Top));
+        var bottomRight = source.TransformFromDevice.Transform(new Point(screen.WorkingArea.Right, screen.WorkingArea.Bottom));
+        return new Rect(topLeft, bottomRight);
     }
 
     private void PersistPosition()
@@ -1001,11 +1035,6 @@ public partial class MainWindow : Window
         _settings.Left = Left;
         _settings.Top = Top;
         _settings.Save();
-    }
-
-    private static bool TryGetCodexWindowRect(out NativeRect selected)
-    {
-        return CodexProcessMonitor.TryGetVisibleWindow(out selected);
     }
 
     private void QuotaModeButton_Click(object sender, RoutedEventArgs e) => SetMode(WidgetMode.Quota);
@@ -1025,9 +1054,11 @@ public partial class MainWindow : Window
     private void ShowInfoMenuItem_Click(object sender, RoutedEventArgs e) => ShowInfoPanelTemporarily();
     private void LockPositionMenuItem_Click(object sender, RoutedEventArgs e) => TogglePositionLock();
     private void SettingsButton_Click(object sender, RoutedEventArgs e) => OpenSettings();
+    private void SourceToggleButton_Click(object sender, RoutedEventArgs e) => ToggleUsageSource();
     private void SettingsMenuItem_Click(object sender, RoutedEventArgs e) => OpenSettings();
-    private void AttachButton_Click(object sender, RoutedEventArgs e) => ToggleAttach();
-    private void AttachMenuItem_Click(object sender, RoutedEventArgs e) => ToggleAttach();
+    private void PinInfoPanelButton_Click(object sender, RoutedEventArgs e) => TogglePinInfoPanel();
+    private void PinInfoPanelMenuItem_Click(object sender, RoutedEventArgs e) => TogglePinInfoPanel();
+    private void Window_LocationChanged(object sender, EventArgs e) => UpdateDragonMirror();
     private async void RefreshMenuItem_Click(object sender, RoutedEventArgs e)
     {
         ShowInfoPanelTemporarily();
@@ -1048,7 +1079,6 @@ public partial class MainWindow : Window
         {
             e.Cancel = true;
             Hide();
-            _anchorTimer.Stop();
             _activityTimer.Stop();
             _countdownTimer.Stop();
             _infoPanelTimer.Stop();
@@ -1070,7 +1100,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        _anchorTimer.Stop();
         _activityTimer.Stop();
         _bubbleTimer.Stop();
         _countdownTimer.Stop();

@@ -6,9 +6,10 @@
         MinWidth="134" MinHeight="150"
         WindowStyle="None" ResizeMode="NoResize"
         AllowsTransparency="True" Background="Transparent"
-        ShowInTaskbar="False" Topmost="True"
+        ShowInTaskbar="True" Topmost="True"
         SnapsToDevicePixels="True"
         Loaded="Window_Loaded"
+        LocationChanged="Window_LocationChanged"
         Closing="Window_Closing">
     <Window.Resources>
         <LinearGradientBrush x:Key="PanelBrush" StartPoint="0,0" EndPoint="1,1">
@@ -71,6 +72,36 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="SourceBadgeButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="48" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Padding" Value="5,0" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="#FF7466BD" />
+            <Setter Property="BorderBrush" Value="#BFE4DFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="BadgeChrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BadgeChrome" Property="Background" Value="#FF9385DD" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="BadgeChrome" Property="Opacity" Value="0.72" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid x:Name="RootGrid">
@@ -84,6 +115,7 @@
                     <MenuItem x:Name="InteractionDisplayModeMenuItem" Header="互动提示" IsCheckable="True" Click="InteractionDisplayModeMenuItem_Click" />
                 </MenuItem>
                 <MenuItem Header="显示额度信息" Click="ShowInfoMenuItem_Click" />
+                <MenuItem x:Name="PinInfoPanelMenuItem" Header="固定额度提示框" IsCheckable="True" Click="PinInfoPanelMenuItem_Click" />
                 <MenuItem Header="每周额度模式" Click="QuotaMenuItem_Click" />
                 <MenuItem Header="5h 额度模式" Click="FiveHourQuotaMenuItem_Click" />
                 <MenuItem x:Name="SummaryMenuItem" Header="过去 7 天 Token 模式" Click="SummaryMenuItem_Click" />
@@ -91,7 +123,6 @@
                 <MenuItem Header="本轮对话模式" Click="ConversationMenuItem_Click" />
                 <Separator />
                 <MenuItem x:Name="LockPositionMenuItem" Header="固定位置" IsCheckable="True" Click="LockPositionMenuItem_Click" />
-                <MenuItem x:Name="AttachMenuItem" Header="贴靠 Codex 窗口" IsCheckable="True" Click="AttachMenuItem_Click" />
                 <MenuItem Header="缩小" Click="SmallerMenuItem_Click" />
                 <MenuItem Header="放大" Click="LargerMenuItem_Click" />
                 <MenuItem Header="设置…" Click="SettingsMenuItem_Click" />
@@ -125,7 +156,7 @@
                         <StackPanel Grid.Column="2" Orientation="Horizontal">
                             <Button Style="{StaticResource IconButtonStyle}" Content="▯" ToolTip="隐藏信息框，仅保留立绘" Click="HideInfoButton_Click" />
                             <Button Style="{StaticResource IconButtonStyle}" Content="⚙" ToolTip="打开设置" Click="SettingsButton_Click" />
-                            <Button x:Name="AttachButton" Style="{StaticResource IconButtonStyle}" Content="◎" ToolTip="贴靠/取消贴靠 Codex 窗口" Click="AttachButton_Click" />
+                            <Button x:Name="PinInfoPanelButton" Style="{StaticResource IconButtonStyle}" Content="◇" ToolTip="固定额度提示框，使其不再自动淡出" Click="PinInfoPanelButton_Click" />
                             <Button Style="{StaticResource IconButtonStyle}" Content="×" ToolTip="关闭挂件" Click="CloseButton_Click" />
                         </StackPanel>
                     </Grid>
@@ -174,6 +205,9 @@
                     </Grid>
                 </Grid>
             </Border>
+            <Button x:Name="SourceToggleButton" Style="{StaticResource SourceBadgeButtonStyle}" Content="Codex"
+                    HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-7,-7,0" Panel.ZIndex="10"
+                    ToolTip="当前显示 Codex；点击切换到 AGY" Click="SourceToggleButton_Click" />
             <Path Data="M 229,205 C 246,218 252,231 245,244 C 232,229 218,220 202,213 Z" Fill="#F13A2D66" HorizontalAlignment="Left" VerticalAlignment="Top" Panel.ZIndex="-1" />
         </Grid>
 

@@ -169,10 +169,9 @@
                         <TextBlock Text="窗口行为" FontSize="16" FontWeight="Bold" Foreground="#FF342D52" Margin="0,0,0,7" />
                         <CheckBox x:Name="LockPositionCheckBox" Content="固定位置（禁止拖动挂件）" />
                         <CheckBox x:Name="AlwaysOnTopCheckBox" Content="始终置顶" />
-                        <CheckBox x:Name="AttachToCodexCheckBox" Content="贴靠 Codex 窗口右下角" />
-                        <TextBlock Text="关闭贴靠后可自由放置；拖动只会在屏幕边缘限制，防止挂件显示不全。" TextWrapping="Wrap" FontSize="11" Foreground="#FF8C84A7" Margin="24,-3,0,3" />
+                        <TextBlock Text="挂件可自由放置；拖动只会在屏幕边缘限制，并会在屏幕右侧自动镜像。" TextWrapping="Wrap" FontSize="11" Foreground="#FF8C84A7" Margin="24,-3,0,3" />
                         <CheckBox x:Name="StartWithCodexCheckBox" Content="随 Codex 启动并监测其运行状态" />
-                        <TextBlock Text="Codex 出现时显示挂件，真正退出后自动隐藏。" TextWrapping="Wrap" FontSize="11" Foreground="#FF8C84A7" Margin="24,-3,0,3" />
+                        <TextBlock Text="Codex 出现时启动挂件；启动后独立运行，不随 Codex 最小化或关闭而隐藏。" TextWrapping="Wrap" FontSize="11" Foreground="#FF8C84A7" Margin="24,-3,0,3" />
                         <CheckBox x:Name="MinimizeOnCloseCheckBox" Content="点击关闭时转入后台最小化（系统托盘）" />
                         <TextBlock Text="后台最小化后，可双击系统托盘图标恢复；托盘菜单可彻底退出。" TextWrapping="Wrap" FontSize="11" Foreground="#FF8C84A7" Margin="24,0,0,4" />
                     </StackPanel>

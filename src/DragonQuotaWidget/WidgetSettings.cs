@@ -43,7 +43,7 @@ public enum SummaryTimeRange
 
 public sealed class WidgetSettings
 {
-    private const int CurrentSchemaVersion = 3;
+    private const int CurrentSchemaVersion = 4;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -56,9 +56,8 @@ public sealed class WidgetSettings
     public int SettingsSchemaVersion { get; set; }
     public TokenTimeRange TokenTimeRange { get; set; } = TokenTimeRange.Today;
     public SummaryTimeRange SummaryTimeRange { get; set; } = SummaryTimeRange.Last7Days;
-    public bool AttachToCodex { get; set; }
     public bool StartWithCodex { get; set; } = true;
-    public bool ShowInfoPanel { get; set; }
+    public bool PinInfoPanel { get; set; }
     public bool LockPosition { get; set; }
     public bool AlwaysOnTop { get; set; } = true;
     public bool MinimizeOnClose { get; set; }
@@ -83,10 +82,10 @@ public sealed class WidgetSettings
             if (settings.SettingsSchemaVersion < 2)
             {
                 // Version 2 changes the default from a permanently visible,
-                // Codex-attached panel to a freely positioned character whose
-                // information panel appears only when needed.
-                settings.ShowInfoPanel = false;
-                settings.AttachToCodex = false;
+                // Migrate older permanently visible layouts to a freely
+                // positioned character whose information panel appears only
+                // when needed.
+                settings.PinInfoPanel = false;
             }
             if (settings.SettingsSchemaVersion < CurrentSchemaVersion)
             {
@@ -102,7 +101,6 @@ public sealed class WidgetSettings
             }
 
             settings.SoundVolume = Math.Clamp(settings.SoundVolume, 0d, 1d);
-            settings.ShowInfoPanel = false;
             settings.ResetInteractionLockSeconds = Math.Clamp(settings.ResetInteractionLockSeconds, 1d, 15d);
             settings.InfoPanelDisplaySeconds = Math.Clamp(settings.InfoPanelDisplaySeconds, 2d, 30d);
             settings.Scale = Math.Clamp(settings.Scale, 0.5d, 1.8d);

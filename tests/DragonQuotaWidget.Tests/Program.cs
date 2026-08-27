@@ -36,6 +36,7 @@ public static class Program
             RunTest("Quota: Caching and process fan-out prevention", TestQuotaCommandRunner_Caching);
             RunTest("Models: Existing Codex/Work calculation and serialization compatibility", TestUsageModels_CodexCompatibility);
             RunTest("Settings: Legacy QuotaInfo mode maps to Codex quota", TestSettings_LegacyQuotaInfoAlias);
+            RunTest("Placement: Dragon faces inward on both halves of the work area", TestPlacement_FacesInward);
 
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Results: {_passedTests} passed, {_failedTests} failed.");
@@ -594,5 +595,14 @@ public static class Program
         var settings = new WidgetSettings();
         AssertEqual(LeftClickDisplayMode.Interaction, settings.LeftClickMode, "Fresh installs keep interaction as the default left-click mode");
         AssertEqual(UsageSource.Codex, settings.UsageSource, "Interaction mode defaults its remembered data source to Codex");
+        Assert(!settings.PinInfoPanel, "Fresh installs keep the quota panel unpinned");
+    }
+
+    private static void TestPlacement_FacesInward()
+    {
+        AssertEqual(-1d, WidgetPlacement.GetFacingScaleX(499, 0, 1000), "The left half must face right toward the screen center");
+        AssertEqual(1d, WidgetPlacement.GetFacingScaleX(500, 0, 1000), "The midpoint and right half must face left toward the screen center");
+        AssertEqual(1d, WidgetPlacement.GetFacingScaleX(3000, 1920, 1920), "A secondary screen work area must use its own midpoint");
+        AssertEqual(1d, WidgetPlacement.GetFacingScaleX(double.NaN, 0, 1000), "Invalid coordinates must preserve the original orientation");
     }
 }

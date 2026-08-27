@@ -7,7 +7,10 @@ namespace DragonQuotaWidget;
 
 public partial class App : System.Windows.Application
 {
+    private const string ActivationEventName = @"Local\CodexDragonQuotaWidget.Activate";
     private Mutex? _singleInstanceMutex;
+    private EventWaitHandle? _activationEvent;
+    private RegisteredWaitHandle? _activationWait;
     private DispatcherTimer? _codexWatchTimer;
     private MainWindow? _widgetWindow;
     private bool _codexWasRunning;
@@ -107,12 +110,27 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        _activationEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ActivationEventName);
         _singleInstanceMutex = new Mutex(true, @"Local\CodexDragonQuotaWidget", out var createdNew);
         if (!createdNew)
         {
+            // The Codex watcher and a tray-minimized widget intentionally keep
+            // the process alive without a visible top-level window. A second
+            // launch is therefore an activation request, not a no-op.
+            _activationEvent.Set();
             Shutdown();
             return;
         }
+
+        _activationWait = ThreadPool.RegisterWaitForSingleObject(
+            _activationEvent,
+            (_, timedOut) =>
+            {
+                if (!timedOut) Dispatcher.BeginInvoke(ActivateExistingInstance);
+            },
+            null,
+            Timeout.Infinite,
+            executeOnlyOnce: false);
 
         try
         {
@@ -137,6 +155,7 @@ public partial class App : System.Windows.Application
             else
             {
                 ShowWidget();
+                _widgetWindow?.ActivateFromExternalRequest();
             }
         }
         catch (Exception ex)
@@ -157,6 +176,13 @@ public partial class App : System.Windows.Application
         Shutdown();
     }
 
+    private void ActivateExistingInstance()
+    {
+        _suppressedUntilRestart = false;
+        ShowWidget();
+        _widgetWindow?.ActivateFromExternalRequest();
+    }
+
     private void SynchronizeWithCodex()
     {
         var codexRunning = CodexProcessMonitor.HasHostWindow();
@@ -165,7 +191,6 @@ public partial class App : System.Windows.Application
             if (_codexWasRunning)
             {
                 _suppressedUntilRestart = false;
-                _widgetWindow?.SetCodexLifecycleVisible(false);
             }
         }
         else if (!_suppressedUntilRestart && (!_codexWasRunning || _widgetWindow is null || !_widgetWindow.IsVisible))
@@ -192,6 +217,8 @@ public partial class App : System.Windows.Application
     protected override void OnExit(ExitEventArgs e)
     {
         _codexWatchTimer?.Stop();
+        _activationWait?.Unregister(null);
+        _activationEvent?.Dispose();
         _singleInstanceMutex?.Dispose();
         base.OnExit(e);
     }

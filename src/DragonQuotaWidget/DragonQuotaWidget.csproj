@@ -9,7 +9,7 @@
     <AssemblyName>CodexDragonQuotaWidget</AssemblyName>
     <RootNamespace>DragonQuotaWidget</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Authors>Local developer</Authors>
     <Product>傻龙插件</Product>
     <Title>傻龙插件</Title>
