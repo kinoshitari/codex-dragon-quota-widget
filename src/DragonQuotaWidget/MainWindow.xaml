@@ -6,7 +6,7 @@
         MinWidth="134" MinHeight="150"
         WindowStyle="None" ResizeMode="NoResize"
         AllowsTransparency="True" Background="Transparent"
-        ShowInTaskbar="True" Topmost="True"
+        ShowInTaskbar="False" Topmost="True"
         SnapsToDevicePixels="True"
         Loaded="Window_Loaded"
         LocationChanged="Window_LocationChanged"
