@@ -27,15 +27,20 @@ public static class Program
             RunTest("Protobuf: Token events without timestamp skipped", TestProtobufParsing_MissingTimestampSkipped);
             RunTest("Protobuf: Malformed bytes and corrupt varint tolerance", TestProtobufParsing_MalformedTolerance);
             RunTest("Storage: Trajectory deduplication by ID picks newest last-write file", () => TestTrajectoryDeduplication_PicksNewestFile(testDir));
+            RunTest("Storage: Corrupt newest trajectory falls back to older valid copy", () => TestTrajectoryDeduplication_FallsBackFromCorruptNewest(testDir));
             RunTest("Storage: Period aggregation across Today, 24h, 7d, 30d, AllTime and surface isolation", () => TestPeriodAggregation_AllPeriodsAndSurfaces(testDir));
             RunTest("Storage: Current conversation resolved by latest event timestamp", () => TestCurrentConversation_PicksLatestByEventTimestamp(testDir));
             RunTest("Storage: Malformed and empty database tolerance without crashing", () => TestMalformedDatabaseTolerance(testDir));
             RunTest("Quota: Full JSON parsing for Gemini weekly (10080m) and 5h (300m) buckets", TestQuotaParsing_FullResponse);
             RunTest("Quota: Missing window behavior (do not infer absent windows)", TestQuotaParsing_MissingWindows);
             RunTest("Quota: Multiline stdout with preamble logs parsed correctly", TestQuotaParsing_MultilineStdoutWithPreamble);
-            RunTest("Quota: Caching and process fan-out prevention", TestQuotaCommandRunner_Caching);
+            RunTest("Quota: Multiple Gemini groups use the most constrained window", TestQuotaParsing_MultipleGeminiGroups);
+            RunTest("Quota: Fresh cache, stale fallback, and hard expiry", TestQuotaCommandRunner_Caching);
+            RunTest("Codex: Quota discovery is not limited to the newest eight files", () => TestCodexQuotaDiscovery_BeyondNewestEight(testDir));
+            RunTest("Activity: Parallel session completion is observed", () => TestActivityMonitor_ParallelSessions(testDir));
             RunTest("Models: Existing Codex/Work calculation and serialization compatibility", TestUsageModels_CodexCompatibility);
             RunTest("Settings: Legacy QuotaInfo mode maps to Codex quota", TestSettings_LegacyQuotaInfoAlias);
+            RunTest("Settings: Corrupt JSON is backed up before defaults are restored", () => TestSettings_CorruptFileBackup(testDir));
             RunTest("Placement: Dragon faces inward on both halves of the work area", TestPlacement_FacesInward);
 
             Console.WriteLine("=================================================");
@@ -228,6 +233,29 @@ public static class Program
         AssertEqual(200L, snapshot.AllTime.Total.TotalTokens, "Deduplication must select the newer file (200 tokens) and discard the older (20 tokens)");
         AssertEqual(100L, snapshot.AllTime.Agy.InputTokens, "Agy input tokens must match newer file");
         AssertEqual(100L, snapshot.AllTime.Agy.OutputTokens, "Agy output tokens must match newer file");
+    }
+
+    private static void TestTrajectoryDeduplication_FallsBackFromCorruptNewest(string rootDir)
+    {
+        var testSubDir = Path.Combine(rootDir, "dedup_fallback_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(testSubDir);
+        var older = Path.Combine(testSubDir, "older.db");
+        var newer = Path.Combine(testSubDir, "newer.db");
+        var now = new DateTimeOffset(2026, 8, 27, 18, 0, 0, TimeSpan.FromHours(8));
+        var valid = SyntheticProtobuf.CreateStepMetadata(now.AddMinutes(-5), nonCachedInput: 120, totalOutput: 30);
+
+        SyntheticDatabaseCreator.CreateDatabase(older, "traj-fallback", new[] { (1L, (byte[]?)valid) });
+        File.SetLastWriteTimeUtc(older, now.UtcDateTime.AddMinutes(-2));
+        SyntheticDatabaseCreator.CreateDatabase(newer, "traj-fallback", new[] { (1L, (byte[]?)new byte[] { 0xFF, 0xFF, 0xFF }) });
+        File.SetLastWriteTimeUtc(newer, now.UtcDateTime.AddMinutes(-1));
+
+        var snapshot = new AntigravityUsageReader(
+            customRoots: new[] { testSubDir },
+            clock: () => now,
+            quotaRunner: NoOpQuotaRunner).ReadSnapshot();
+
+        AssertEqual(150L, snapshot.AllTime.Agy.TotalTokens, "A corrupt newest copy must fall back to the older valid trajectory");
+        Assert(snapshot.Warning?.Contains("回退", StringComparison.Ordinal) == true, "Fallback must be disclosed in warnings");
     }
 
     private static void TestPeriodAggregation_AllPeriodsAndSurfaces(string rootDir)
@@ -511,12 +539,37 @@ public static class Program
         Assert(Math.Abs(snapshot.Primary!.UsedPercent - 50.0) < 1e-4, "UsedPercent should be 50%");
     }
 
+    private static void TestQuotaParsing_MultipleGeminiGroups()
+    {
+        string json = @"{
+  ""status"": ""SUCCESS"",
+  ""command"": { ""data"": { ""groups"": [
+    { ""name"": ""Gemini Standard"", ""buckets"": [
+      { ""window"": ""weekly"", ""remaining_fraction"": 0.80, ""reset_time"": ""2026-09-03T00:00:00Z"" }
+    ] },
+    { ""name"": ""Gemini Premium"", ""buckets"": [
+      { ""window"": ""weekly"", ""remaining_fraction"": 0.25, ""reset_time"": ""2026-09-02T00:00:00Z"" },
+      { ""window"": ""5h"", ""remaining_fraction"": 0.40 }
+    ] }
+  ] } }
+}";
+
+        var snapshot = AntigravityUsageReader.ParseQuotaJson(json, DateTimeOffset.UtcNow);
+        Assert(snapshot?.Primary is not null, "Weekly quota should be parsed across all Gemini groups");
+        var parsed = snapshot!;
+        Assert(parsed.Secondary is not null, "5h quota should be parsed from a later Gemini group");
+        Assert(Math.Abs(parsed.Primary!.UsedPercent - 75d) < 1e-4, "Most constrained weekly group should win");
+        Assert(Math.Abs(parsed.Secondary!.UsedPercent - 60d) < 1e-4, "5h group should be retained");
+    }
+
     private static void TestQuotaCommandRunner_Caching()
     {
         int invocationCount = 0;
+        bool failRunner = false;
         AntigravityUsageReader.CommandRunner mockRunner = (file, args, timeout) =>
         {
             invocationCount++;
+            if (failRunner) return (1, string.Empty, "simulated timeout");
             string json = @"{
   ""status"": ""SUCCESS"",
   ""command"": {
@@ -541,7 +594,8 @@ public static class Program
             customRoots: Array.Empty<string>(),
             clock: () => now,
             quotaRunner: mockRunner,
-            quotaCacheDuration: TimeSpan.FromSeconds(30));
+            quotaCacheDuration: TimeSpan.FromSeconds(30),
+            maxStaleQuotaAge: TimeSpan.FromMinutes(5));
 
         var snap1 = reader.ReadSnapshot();
         AssertEqual(1, invocationCount, "First read should invoke quota runner");
@@ -553,11 +607,100 @@ public static class Program
         AssertEqual(1, invocationCount, "Second read within cache duration must NOT re-invoke runner");
         Assert(snap2.RateLimits is not null, "RateLimits should be returned from cache");
 
-        // Third call 35 seconds later (past cache duration)
+        // Third call 35 seconds later (past fresh cache duration): query fails,
+        // so a clearly marked short-lived stale fallback is allowed.
+        failRunner = true;
         now = now.AddSeconds(35);
         var snap3 = reader.ReadSnapshot();
         AssertEqual(2, invocationCount, "Read after cache expiry must re-invoke runner");
+        Assert(snap3.RateLimits?.IsStale == true, "Failed refresh may only return a cache explicitly marked stale");
+        Assert(!string.IsNullOrWhiteSpace(snap3.Warning), "Stale fallback must include a warning");
+
+        // Once the maximum stale age is exceeded, no quota may be displayed.
+        now = now.AddMinutes(6);
+        var snap4 = reader.ReadSnapshot();
+        AssertEqual(3, invocationCount, "Expired stale cache should trigger another query");
+        Assert(snap4.RateLimits is null, "Expired stale quota must not be displayed");
+        Assert(snap4.Warning?.Contains("已过期", StringComparison.Ordinal) == true, "Hard expiry must be disclosed");
     }
+
+    private static void TestCodexQuotaDiscovery_BeyondNewestEight(string rootDir)
+    {
+        var codexRoot = Path.Combine(rootDir, "codex_quota_" + Guid.NewGuid().ToString("N"));
+        var sessionsRoot = Path.Combine(codexRoot, "sessions");
+        Directory.CreateDirectory(sessionsRoot);
+        var now = new DateTimeOffset(2026, 8, 27, 18, 0, 0, TimeSpan.FromHours(8));
+
+        for (var index = 0; index < 10; index++)
+        {
+            var sessionId = $"session-{index}";
+            var path = Path.Combine(sessionsRoot, $"session-{index}.jsonl");
+            var meta = JsonSerializer.Serialize(new
+            {
+                timestamp = now.AddDays(-60).AddMinutes(index),
+                type = "session_meta",
+                payload = new { id = sessionId, originator = "codex_desktop", thread_source = "user" }
+            });
+            object? rateLimits = index == 9
+                ? new { primary = new { used_percent = 77d, window_minutes = 10080, resets_at = now.AddDays(1).ToUnixTimeSeconds() } }
+                : null;
+            var token = JsonSerializer.Serialize(new
+            {
+                timestamp = index == 9 ? now : now.AddDays(-60).AddMinutes(index),
+                type = "event_msg",
+                payload = new
+                {
+                    type = "token_count",
+                    info = new
+                    {
+                        last_token_usage = new { input_tokens = 10L, output_tokens = 5L, cached_input_tokens = 0L, reasoning_output_tokens = 0L },
+                        total_token_usage = new { input_tokens = 10L, output_tokens = 5L, cached_input_tokens = 0L, reasoning_output_tokens = 0L }
+                    },
+                    rate_limits = rateLimits
+                }
+            });
+            File.WriteAllLines(path, new[] { meta, token });
+            File.SetLastWriteTimeUtc(path, now.UtcDateTime.AddDays(-60).AddMinutes(-index));
+        }
+
+        var snapshot = new CodexUsageReader(codexRoot).ReadSnapshot();
+        Assert(snapshot.RateLimits?.Primary is not null, "Quota should be discovered outside the newest eight files");
+        var limits = snapshot.RateLimits!;
+        Assert(Math.Abs(limits.Primary!.UsedPercent - 77d) < 1e-4, "The newest quota event by timestamp should win");
+    }
+
+    private static void TestActivityMonitor_ParallelSessions(string rootDir)
+    {
+        var codexRoot = Path.Combine(rootDir, "activity_" + Guid.NewGuid().ToString("N"));
+        var sessionsRoot = Path.Combine(codexRoot, "sessions");
+        Directory.CreateDirectory(sessionsRoot);
+        var firstPath = Path.Combine(sessionsRoot, "first.jsonl");
+        var secondPath = Path.Combine(sessionsRoot, "second.jsonl");
+        var now = DateTimeOffset.UtcNow;
+
+        File.WriteAllText(firstPath, CreateActivityEvent(now, "task_started") + Environment.NewLine);
+        File.WriteAllText(secondPath, CreateActivityEvent(now.AddSeconds(1), "agent_reasoning") + Environment.NewLine);
+        File.SetLastWriteTimeUtc(firstPath, now.UtcDateTime);
+        File.SetLastWriteTimeUtc(secondPath, now.UtcDateTime.AddSeconds(1));
+
+        var monitor = new CodexActivityMonitor(codexRoot);
+        var initial = monitor.Poll();
+        Assert(initial.IsWorking, "At least one parallel session should be reported working");
+        var initialCompletion = initial.CompletionRevision;
+
+        File.AppendAllText(firstPath, CreateActivityEvent(now.AddSeconds(2), "task_complete") + Environment.NewLine);
+        File.SetLastWriteTimeUtc(firstPath, now.UtcDateTime.AddSeconds(2));
+        var afterCompletion = monitor.Poll();
+        Assert(afterCompletion.IsWorking, "The second parallel session should remain working");
+        Assert(afterCompletion.CompletionRevision > initialCompletion, "Completion from a non-selected session must be observed");
+    }
+
+    private static string CreateActivityEvent(DateTimeOffset timestamp, string eventType) => JsonSerializer.Serialize(new
+    {
+        timestamp,
+        type = "event_msg",
+        payload = new { type = eventType }
+    });
 
     private static void TestUsageModels_CodexCompatibility()
     {
@@ -596,6 +739,21 @@ public static class Program
         AssertEqual(LeftClickDisplayMode.Interaction, settings.LeftClickMode, "Fresh installs keep interaction as the default left-click mode");
         AssertEqual(UsageSource.Codex, settings.UsageSource, "Interaction mode defaults its remembered data source to Codex");
         Assert(!settings.PinInfoPanel, "Fresh installs keep the quota panel unpinned");
+    }
+
+    private static void TestSettings_CorruptFileBackup(string rootDir)
+    {
+        var settingsDir = Path.Combine(rootDir, "settings_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(settingsDir);
+        var settingsPath = Path.Combine(settingsDir, "settings.json");
+        File.WriteAllText(settingsPath, "{ this is not valid json");
+
+        var settings = WidgetSettings.Load(settingsPath);
+        var backups = Directory.GetFiles(settingsDir, "settings.json.corrupt-*.bak");
+
+        AssertEqual(LeftClickDisplayMode.Interaction, settings.LeftClickMode, "Corrupt settings should recover with safe defaults");
+        AssertEqual(1, backups.Length, "Corrupt settings should be backed up exactly once");
+        AssertEqual("{ this is not valid json", File.ReadAllText(backups[0]), "Backup must preserve the original corrupt content");
     }
 
     private static void TestPlacement_FacesInward()

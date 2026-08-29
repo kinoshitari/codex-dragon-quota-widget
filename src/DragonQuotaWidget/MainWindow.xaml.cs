@@ -137,6 +137,7 @@ public partial class MainWindow : Window
 
     private void RestoreFromTray()
     {
+        if (Application.Current is App app) app.ResumeWatcherVisibility();
         if (!IsVisible) Show();
         WindowState = WindowState.Normal;
         _activityTimer.Start();
@@ -349,8 +350,13 @@ public partial class MainWindow : Window
         }
 
         var warning = string.IsNullOrWhiteSpace(snapshot.Warning) ? string.Empty : $" · {snapshot.Warning}";
-        StatusText.Text = $"本地 {sourceLabel} 刷新 {snapshot.ReadAt:HH:mm:ss}{warning}";
-        StatusDot.Fill = new SolidColorBrush(Color.FromRgb(138, 230, 192));
+        var staleQuota = _mode is WidgetMode.Quota or WidgetMode.FiveHourQuota && snapshot.RateLimits?.IsStale == true;
+        StatusText.Text = staleQuota
+            ? $"本地 {sourceLabel} 缓存 {snapshot.ReadAt:HH:mm:ss}{warning}"
+            : $"本地 {sourceLabel} 刷新 {snapshot.ReadAt:HH:mm:ss}{warning}";
+        StatusDot.Fill = new SolidColorBrush(staleQuota
+            ? Color.FromRgb(255, 203, 107)
+            : Color.FromRgb(138, 230, 192));
     }
 
     private void RenderQuota(UsageSnapshot snapshot, int targetWindowMinutes, string title, string remainingLabel)
@@ -379,7 +385,9 @@ public partial class MainWindow : Window
         var remaining = Math.Clamp(100d - window.UsedPercent, 0d, 100d);
         MainValueText.Text = $"{remaining:0.#}%";
         MainLabelText.Text = remainingLabel;
-        MainSubText.Text = $"{sourceLabel} 汇总 · {FormatWindow(window.WindowMinutes)}";
+        MainSubText.Text = snapshot.RateLimits?.IsStale == true
+            ? $"{sourceLabel} 旧缓存 · {FormatWindow(window.WindowMinutes)}"
+            : $"{sourceLabel} 汇总 · {FormatWindow(window.WindowMinutes)}";
         UsageProgress.Value = remaining;
         Detail1Label.Text = "已使用";
         Detail1Value.Text = $"{window.UsedPercent:0.#}%";
@@ -1075,28 +1083,27 @@ public partial class MainWindow : Window
         {
             PersistPosition();
         }
-        if (Application.Current is App { IsCodexWatcher: true } watcher && !_forceExit)
-        {
-            e.Cancel = true;
-            Hide();
-            _activityTimer.Stop();
-            _countdownTimer.Stop();
-            _infoPanelTimer.Stop();
-            _refreshTimer.Stop();
-            watcher.SuppressUntilCodexRestarts();
-            return;
-        }
-
         if (_settings.MinimizeOnClose && !_forceExit)
         {
             e.Cancel = true;
             Hide();
             _notifyIcon.Visible = true;
+            if (Application.Current is App { IsCodexWatcher: true } watcher)
+            {
+                watcher.SuppressUntilCodexRestarts();
+            }
             if (!_minimizeBalloonShown)
             {
                 _notifyIcon.ShowBalloonTip(1800, "傻龙插件仍在后台运行", "双击托盘图标可恢复，右键可彻底退出。", WinForms.ToolTipIcon.Info);
                 _minimizeBalloonShown = true;
             }
+            return;
+        }
+
+        if (Application.Current is App { IsCodexWatcher: true } && !_forceExit)
+        {
+            e.Cancel = true;
+            Dispatcher.BeginInvoke(ExitApplication);
             return;
         }
 

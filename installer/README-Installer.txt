@@ -5,6 +5,7 @@
 2. 安装位置为：%USERPROFILE%\plugins\codex-dragon-quota-widget
 3. 安装程序会创建桌面和开始菜单快捷方式，并注册随 Codex 启动。
 4. 如果电脑已安装 Codex CLI，安装程序还会自动注册 personal marketplace 插件。
+5. 升级时会先验证完整载荷并备份旧版；核心安装失败会自动回滚。
 
 卸载方法：
 从开始菜单选择“傻龙插件 → 卸载挂件”。

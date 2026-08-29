@@ -170,6 +170,11 @@ public partial class App : System.Windows.Application
         if (IsCodexWatcher) _suppressedUntilRestart = true;
     }
 
+    public void ResumeWatcherVisibility()
+    {
+        _suppressedUntilRestart = false;
+    }
+
     public void ExitCompletely()
     {
         _codexWatchTimer?.Stop();

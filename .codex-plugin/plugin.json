@@ -1,6 +1,6 @@
 {
   "name": "codex-dragon-quota-widget",
-  "version": "0.3.0+codex.20260827220915",
+  "version": "0.3.1+codex.20260829223424",
   "description": "\u50bb\u9f99\u63d2\u4ef6\uff1a\u672c\u5730\u663e\u793a Codex \u4e0e AGY \u989d\u5ea6\u3001\u6eda\u52a8 Token \u6d88\u8017\u7684\u9f99\u5a18\u4f34\u751f\u6302\u4ef6\u3002",
   "author": {
     "name": "Local developer"

@@ -12,7 +12,7 @@ $pluginName = 'codex-dragon-quota-widget'
 $pluginRootPath = (Get-Item -LiteralPath $PluginRoot).FullName
 $selfContainedPath = (Get-Item -LiteralPath $SelfContainedBin).FullName
 $outputPath = [System.IO.Path]::GetFullPath($OutputDirectory)
-$buildRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'CodexDragonWidgetInstallerBuild'
+$buildRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("CodexDragonWidgetInstallerBuild-" + [guid]::NewGuid().ToString('N'))
 $payloadRoot = Join-Path $buildRoot $pluginName
 $bundleRoot = Join-Path $buildRoot 'bundle'
 
@@ -24,8 +24,11 @@ New-Item -ItemType Directory -Path $payloadRoot, $bundleRoot, $outputPath -Force
 foreach ($name in @('.codex-plugin', 'assets', 'scripts', 'skills', 'installer')) {
     Copy-Item -LiteralPath (Join-Path $pluginRootPath $name) -Destination $payloadRoot -Recurse -Force
 }
-foreach ($name in @('Launch-Dragon-Quota-Widget.bat', 'README.md', 'LICENSE', 'ASSET-NOTICE.md')) {
-    Copy-Item -LiteralPath (Join-Path $pluginRootPath $name) -Destination $payloadRoot -Force
+foreach ($name in @('Launch-Dragon-Quota-Widget.bat', 'README.md', 'CURRENT_VERSION_SUMMARY.md', 'LICENSE', 'ASSET-NOTICE.md', 'THIRD-PARTY-NOTICES.md')) {
+    $sourcePath = Join-Path $pluginRootPath $name
+    if (Test-Path -LiteralPath $sourcePath) {
+        Copy-Item -LiteralPath $sourcePath -Destination $payloadRoot -Force
+    }
 }
 New-Item -ItemType Directory -Path (Join-Path $payloadRoot 'bin\win-x64') -Force | Out-Null
 Get-ChildItem -LiteralPath $selfContainedPath -Force | Copy-Item -Destination (Join-Path $payloadRoot 'bin\win-x64') -Recurse -Force

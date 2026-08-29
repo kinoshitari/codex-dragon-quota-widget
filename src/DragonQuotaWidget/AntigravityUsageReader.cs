@@ -16,6 +16,7 @@ public sealed class AntigravityUsageReader
     private readonly Func<DateTimeOffset> _clock;
     private readonly CommandRunner? _quotaRunner;
     private readonly TimeSpan _quotaCacheDuration;
+    private readonly TimeSpan _maxStaleQuotaAge;
 
     private RateLimitSnapshot? _cachedRateLimits;
     private DateTimeOffset _lastQuotaFetchTime = DateTimeOffset.MinValue;
@@ -25,12 +26,14 @@ public sealed class AntigravityUsageReader
         IEnumerable<string>? customRoots = null,
         Func<DateTimeOffset>? clock = null,
         CommandRunner? quotaRunner = null,
-        TimeSpan? quotaCacheDuration = null)
+        TimeSpan? quotaCacheDuration = null,
+        TimeSpan? maxStaleQuotaAge = null)
     {
         _roots = customRoots?.ToArray() ?? GetDefaultRoots();
         _clock = clock ?? (() => DateTimeOffset.Now);
         _quotaRunner = quotaRunner;
         _quotaCacheDuration = quotaCacheDuration ?? TimeSpan.FromSeconds(30);
+        _maxStaleQuotaAge = maxStaleQuotaAge ?? TimeSpan.FromMinutes(5);
     }
 
     public static IReadOnlyList<string> GetDefaultRoots()
@@ -68,13 +71,40 @@ public sealed class AntigravityUsageReader
 
         ConversationCandidate? latestTrajectory = null;
 
-        foreach (var file in deduplicated)
+        foreach (var database in deduplicated)
         {
+            List<(DateTimeOffset Timestamp, UsageTotals Usage)>? events = null;
+            string? selectedPath = null;
+            for (var candidateIndex = 0; candidateIndex < database.CandidatePaths.Count; candidateIndex++)
+            {
+                var candidatePath = database.CandidatePaths[candidateIndex];
+                try
+                {
+                    var candidateEvents = ReadTrajectoryEvents(candidatePath, warnings);
+                    if (candidateEvents.Count == 0)
+                    {
+                        warnings.Add($"轨迹数据库没有可用事件 ({Path.GetFileName(candidatePath)})");
+                        continue;
+                    }
+
+                    events = candidateEvents;
+                    selectedPath = candidatePath;
+                    if (candidateIndex > 0)
+                    {
+                        warnings.Add($"已回退到较早的轨迹数据库 ({Path.GetFileName(candidatePath)})");
+                    }
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add($"读取数据库失败 ({Path.GetFileName(candidatePath)}): {ex.Message}");
+                }
+            }
+
+            if (events is null || selectedPath is null) continue;
+
             try
             {
-                var events = ReadTrajectoryEvents(file.FilePath, warnings);
-                if (events.Count == 0) continue;
-
                 var trajTotals = new MutableUsageTotals();
                 DateTimeOffset trajEarliest = DateTimeOffset.MaxValue;
                 DateTimeOffset trajLatest = DateTimeOffset.MinValue;
@@ -96,7 +126,7 @@ public sealed class AntigravityUsageReader
                 if (latestTrajectory is null || trajLatest > latestTrajectory.LatestEventTime)
                 {
                     latestTrajectory = new ConversationCandidate(
-                        file.TrajectoryId,
+                        database.TrajectoryId,
                         trajTotals.ToImmutable(),
                         trajEarliest,
                         trajLatest);
@@ -104,7 +134,7 @@ public sealed class AntigravityUsageReader
             }
             catch (Exception ex)
             {
-                warnings.Add($"读取数据库失败 ({Path.GetFileName(file.FilePath)}): {ex.Message}");
+                warnings.Add($"聚合数据库失败 ({Path.GetFileName(selectedPath)}): {ex.Message}");
             }
         }
 
@@ -174,7 +204,7 @@ public sealed class AntigravityUsageReader
 
     private static List<DeduplicatedDatabase> DeduplicateDatabases(List<FileInfo> files, HashSet<string> warnings)
     {
-        var grouped = new Dictionary<string, DeduplicatedDatabase>(StringComparer.OrdinalIgnoreCase);
+        var grouped = new Dictionary<string, List<FileInfo>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var file in files)
         {
@@ -188,10 +218,12 @@ public sealed class AntigravityUsageReader
                     continue;
                 }
 
-                if (!grouped.TryGetValue(trajectoryId, out var existing) || file.LastWriteTimeUtc > existing.LastWriteTimeUtc)
+                if (!grouped.TryGetValue(trajectoryId, out var candidates))
                 {
-                    grouped[trajectoryId] = new DeduplicatedDatabase(trajectoryId, file.FullName, file.LastWriteTimeUtc);
+                    candidates = new List<FileInfo>();
+                    grouped[trajectoryId] = candidates;
                 }
+                candidates.Add(file);
             }
             catch (Exception ex)
             {
@@ -199,7 +231,14 @@ public sealed class AntigravityUsageReader
             }
         }
 
-        return grouped.Values.ToList();
+        return grouped
+            .Select(pair => new DeduplicatedDatabase(
+                pair.Key,
+                pair.Value
+                    .OrderByDescending(file => file.LastWriteTimeUtc)
+                    .Select(file => file.FullName)
+                    .ToArray()))
+            .ToList();
     }
 
     private static List<(DateTimeOffset Timestamp, UsageTotals Usage)> ReadTrajectoryEvents(string filePath, HashSet<string> warnings)
@@ -380,7 +419,8 @@ public sealed class AntigravityUsageReader
     {
         lock (_quotaLock)
         {
-            if (_cachedRateLimits is not null && (now - _lastQuotaFetchTime) < _quotaCacheDuration)
+            var freshCacheAge = now - _lastQuotaFetchTime;
+            if (_cachedRateLimits is not null && freshCacheAge >= TimeSpan.Zero && freshCacheAge < _quotaCacheDuration)
             {
                 return _cachedRateLimits;
             }
@@ -388,12 +428,34 @@ public sealed class AntigravityUsageReader
             var snapshot = QueryQuota(now, warnings);
             if (snapshot is not null)
             {
-                _cachedRateLimits = snapshot;
+                _cachedRateLimits = snapshot with
+                {
+                    IsStale = false,
+                    LastSuccessfulFetchAt = now
+                };
                 _lastQuotaFetchTime = now;
+                return _cachedRateLimits;
             }
 
-            return snapshot ?? _cachedRateLimits;
+            var cacheAge = now - _lastQuotaFetchTime;
+            if (_cachedRateLimits is not null && cacheAge >= TimeSpan.Zero && cacheAge <= _maxStaleQuotaAge)
+            {
+                warnings.Add($"AGY 额度刷新失败，显示 {FormatCacheAge(cacheAge)}前的缓存");
+                return _cachedRateLimits with { IsStale = true };
+            }
+
+            if (_cachedRateLimits is not null)
+            {
+                warnings.Add("AGY 额度缓存已过期");
+            }
+            return null;
         }
+    }
+
+    private static string FormatCacheAge(TimeSpan age)
+    {
+        if (age.TotalMinutes < 1) return $"{Math.Max(1, (int)Math.Ceiling(age.TotalSeconds))} 秒";
+        return $"{Math.Max(1, (int)Math.Ceiling(age.TotalMinutes))} 分钟";
     }
 
     private RateLimitSnapshot? QueryQuota(DateTimeOffset now, HashSet<string> warnings)
@@ -607,24 +669,18 @@ public sealed class AntigravityUsageReader
         if (!dataElem.TryGetProperty("groups", out var groupsElem) || groupsElem.ValueKind != JsonValueKind.Array)
             return false;
 
-        JsonElement? geminiGroup = null;
+        var geminiGroups = new List<JsonElement>();
         foreach (var group in groupsElem.EnumerateArray())
         {
             if (group.TryGetProperty("name", out var nameElem) &&
                 nameElem.GetString() is { } name &&
                 name.Contains("Gemini", StringComparison.OrdinalIgnoreCase))
             {
-                geminiGroup = group;
-                break;
+                geminiGroups.Add(group);
             }
         }
 
-        if (geminiGroup is null)
-        {
-            return false;
-        }
-
-        if (!geminiGroup.Value.TryGetProperty("buckets", out var bucketsElem) || bucketsElem.ValueKind != JsonValueKind.Array)
+        if (geminiGroups.Count == 0)
         {
             return false;
         }
@@ -632,35 +688,39 @@ public sealed class AntigravityUsageReader
         RateWindow? weeklyWindow = null;
         RateWindow? fiveHourWindow = null;
 
-        foreach (var bucket in bucketsElem.EnumerateArray())
+        foreach (var geminiGroup in geminiGroups)
         {
-            if (!bucket.TryGetProperty("window", out var windowElem) || windowElem.GetString() is not { } windowStr)
+            if (!geminiGroup.TryGetProperty("buckets", out var bucketsElem) || bucketsElem.ValueKind != JsonValueKind.Array)
                 continue;
 
-            double remainingFraction = 0d;
-            if (bucket.TryGetProperty("remaining_fraction", out var remElem) && remElem.TryGetDouble(out var remVal))
+            foreach (var bucket in bucketsElem.EnumerateArray())
             {
-                remainingFraction = remVal;
-            }
+                if (!bucket.TryGetProperty("window", out var windowElem) || windowElem.GetString() is not { } windowStr)
+                    continue;
 
-            DateTimeOffset? resetTime = null;
-            if (bucket.TryGetProperty("reset_time", out var resetElem) && resetElem.GetString() is { } resetStr)
-            {
-                if (DateTimeOffset.TryParse(resetStr, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsedReset))
+                double remainingFraction = 0d;
+                if (bucket.TryGetProperty("remaining_fraction", out var remElem) && remElem.TryGetDouble(out var remVal))
+                {
+                    remainingFraction = remVal;
+                }
+
+                DateTimeOffset? resetTime = null;
+                if (bucket.TryGetProperty("reset_time", out var resetElem) && resetElem.GetString() is { } resetStr &&
+                    DateTimeOffset.TryParse(resetStr, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsedReset))
                 {
                     resetTime = parsedReset;
                 }
-            }
 
-            double usedPercent = Math.Clamp((1.0 - remainingFraction) * 100.0, 0.0, 100.0);
+                double usedPercent = Math.Clamp((1.0 - remainingFraction) * 100.0, 0.0, 100.0);
 
-            if (windowStr.Equals("weekly", StringComparison.OrdinalIgnoreCase))
-            {
-                weeklyWindow = new RateWindow(usedPercent, 10080, resetTime);
-            }
-            else if (windowStr.Equals("5h", StringComparison.OrdinalIgnoreCase))
-            {
-                fiveHourWindow = new RateWindow(usedPercent, 300, resetTime);
+                if (windowStr.Equals("weekly", StringComparison.OrdinalIgnoreCase))
+                {
+                    weeklyWindow = SelectMoreConstrainedWindow(weeklyWindow, new RateWindow(usedPercent, 10080, resetTime));
+                }
+                else if (windowStr.Equals("5h", StringComparison.OrdinalIgnoreCase))
+                {
+                    fiveHourWindow = SelectMoreConstrainedWindow(fiveHourWindow, new RateWindow(usedPercent, 300, resetTime));
+                }
             }
         }
 
@@ -673,7 +733,16 @@ public sealed class AntigravityUsageReader
         return true;
     }
 
-    private sealed record DeduplicatedDatabase(string TrajectoryId, string FilePath, DateTime LastWriteTimeUtc);
+    private static RateWindow SelectMoreConstrainedWindow(RateWindow? current, RateWindow candidate)
+    {
+        if (current is null || candidate.UsedPercent > current.UsedPercent) return candidate;
+        if (Math.Abs(candidate.UsedPercent - current.UsedPercent) < 0.0001 &&
+            candidate.ResetsAt is not null &&
+            (current.ResetsAt is null || candidate.ResetsAt < current.ResetsAt)) return candidate;
+        return current;
+    }
+
+    private sealed record DeduplicatedDatabase(string TrajectoryId, IReadOnlyList<string> CandidatePaths);
     private sealed record ConversationCandidate(string TrajectoryId, UsageTotals Totals, DateTimeOffset StartedAt, DateTimeOffset LatestEventTime);
 
     private sealed class MutableUsageTotals

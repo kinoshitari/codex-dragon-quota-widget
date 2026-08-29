@@ -9,6 +9,7 @@ namespace DragonQuotaWidget;
 public sealed class CodexUsageReader
 {
     private readonly string _sessionsRoot;
+    private readonly Dictionary<string, CachedSessionSummary> _historicalCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Regex IdRegex = new("\\\"id\\\":\\\"(?<value>[^\\\"]+)\\\"", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex SessionIdRegex = new("\\\"session_id\\\":\\\"(?<value>[^\\\"]+)\\\"", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex TimestampRegex = new("\\\"timestamp\\\":\\\"(?<value>[^\\\"]+)\\\"", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -74,6 +75,12 @@ public sealed class CodexUsageReader
             catch (UnauthorizedAccessException) { warnings.Add("部分会话文件无读取权限"); }
         }
 
+        var existingPaths = files.Select(file => file.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var stalePath in _historicalCache.Keys.Where(path => !existingPaths.Contains(path)).ToArray())
+        {
+            _historicalCache.Remove(stalePath);
+        }
+
         var currentRoot = sessions.Values
             .Where(session => session.IsTopLevelUser)
             .OrderByDescending(session => session.File.LastWriteTimeUtc)
@@ -87,11 +94,9 @@ public sealed class CodexUsageReader
                 .Select(session => session.Id)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var recentForQuota = files.Take(8).Select(file => file.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var selectedSessions = sessions.Values.Where(session =>
             session.File.LastWriteTimeUtc >= earliestPeriodStart.UtcDateTime ||
-            currentFamily.Contains(session.Id) ||
-            recentForQuota.Contains(session.File.FullName)).ToArray();
+            currentFamily.Contains(session.Id)).ToArray();
         var selectedSessionIds = selectedSessions.Select(session => session.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var todayUsage = new MutableUsageBySurface();
@@ -109,6 +114,7 @@ public sealed class CodexUsageReader
                 var surface = ResolveSurface(session, sessions);
                 UsageTotals? latestSessionTotal = null;
                 var sessionFallbackTotal = new MutableUsageTotals();
+                RateLimitSnapshot? latestSessionLimits = null;
                 using var stream = new FileStream(session.File.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 using var reader = new StreamReader(stream);
                 while (reader.ReadLine() is { } line)
@@ -142,7 +148,11 @@ public sealed class CodexUsageReader
                         if (payload.TryGetProperty("rate_limits", out var rateLimits) && rateLimits.ValueKind == JsonValueKind.Object)
                         {
                             var parsed = ParseRateLimits(rateLimits, eventTime);
-                            if (parsed is not null && (latestLimits is null || parsed.EventAt > latestLimits.EventAt)) latestLimits = parsed;
+                            if (parsed is not null)
+                            {
+                                if (latestLimits is null || parsed.EventAt > latestLimits.EventAt) latestLimits = parsed;
+                                if (latestSessionLimits is null || parsed.EventAt > latestSessionLimits.EventAt) latestSessionLimits = parsed;
+                            }
                         }
                     }
                     catch (JsonException)
@@ -150,7 +160,9 @@ public sealed class CodexUsageReader
                         // A live JSONL file can temporarily end with a partial line.
                     }
                 }
-                allTime.Add(surface, latestSessionTotal ?? sessionFallbackTotal.ToImmutable());
+                var sessionTotal = latestSessionTotal ?? sessionFallbackTotal.ToImmutable();
+                allTime.Add(surface, sessionTotal);
+                _historicalCache[session.File.FullName] = CachedSessionSummary.FromFile(session.File, sessionTotal, latestSessionLimits);
             }
             catch (IOException) { warnings.Add("部分会话文件正被占用"); }
             catch (UnauthorizedAccessException) { warnings.Add("部分会话文件无读取权限"); }
@@ -160,7 +172,12 @@ public sealed class CodexUsageReader
         {
             try
             {
-                allTime.Add(ResolveSurface(session, sessions), ReadLatestSessionTotal(session.File));
+                var summary = ReadCachedSessionSummary(session.File);
+                allTime.Add(ResolveSurface(session, sessions), summary.Usage);
+                if (summary.RateLimits is not null && (latestLimits is null || summary.RateLimits.EventAt > latestLimits.EventAt))
+                {
+                    latestLimits = summary.RateLimits;
+                }
             }
             catch (IOException) { warnings.Add("部分历史会话文件正被占用"); }
             catch (UnauthorizedAccessException) { warnings.Add("部分历史会话文件无读取权限"); }
@@ -188,7 +205,19 @@ public sealed class CodexUsageReader
             warnings.FirstOrDefault());
     }
 
-    private static UsageTotals ReadLatestSessionTotal(FileInfo file)
+    private CachedSessionSummary ReadCachedSessionSummary(FileInfo file)
+    {
+        if (_historicalCache.TryGetValue(file.FullName, out var cached) && cached.Matches(file))
+        {
+            return cached;
+        }
+
+        var parsed = ReadHistoricalSessionSummary(file);
+        _historicalCache[file.FullName] = parsed;
+        return parsed;
+    }
+
+    private static CachedSessionSummary ReadHistoricalSessionSummary(FileInfo file)
     {
         const int tailBytes = 2 * 1024 * 1024;
         using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
@@ -198,13 +227,20 @@ public sealed class CodexUsageReader
         if (offset > 0) reader.ReadLine();
 
         UsageTotals? latest = null;
+        RateLimitSnapshot? latestLimits = null;
         while (reader.ReadLine() is { } line)
         {
             if (!line.Contains("\"token_count\"", StringComparison.Ordinal)) continue;
             try
             {
                 using var document = JsonDocument.Parse(line);
-                if (!TryReadTokenEvent(document.RootElement, out _, out var payload) ||
+                if (!TryReadTokenEvent(document.RootElement, out var eventTime, out var payload)) continue;
+                if (payload.TryGetProperty("rate_limits", out var rateLimits) && rateLimits.ValueKind == JsonValueKind.Object)
+                {
+                    var parsedLimits = ParseRateLimits(rateLimits, eventTime);
+                    if (parsedLimits is not null && (latestLimits is null || parsedLimits.EventAt > latestLimits.EventAt)) latestLimits = parsedLimits;
+                }
+                if (
                     !payload.TryGetProperty("info", out var info) ||
                     info.ValueKind != JsonValueKind.Object ||
                     !info.TryGetProperty("total_token_usage", out var totalUsage) ||
@@ -214,7 +250,10 @@ public sealed class CodexUsageReader
             catch (JsonException) { }
         }
 
-        if (latest is not null) return latest;
+        if (latest is not null && latestLimits is not null)
+        {
+            return CachedSessionSummary.FromFile(file, latest, latestLimits);
+        }
 
         stream.Seek(0, SeekOrigin.Begin);
         reader.DiscardBufferedData();
@@ -225,14 +264,19 @@ public sealed class CodexUsageReader
             try
             {
                 using var document = JsonDocument.Parse(line);
-                if (!TryReadTokenEvent(document.RootElement, out _, out var payload) ||
-                    !payload.TryGetProperty("info", out var info) ||
-                    info.ValueKind != JsonValueKind.Object) continue;
-                if (info.TryGetProperty("total_token_usage", out var totalUsage) && totalUsage.ValueKind == JsonValueKind.Object)
+                if (!TryReadTokenEvent(document.RootElement, out var eventTime, out var payload)) continue;
+                if (payload.TryGetProperty("rate_limits", out var rateLimits) && rateLimits.ValueKind == JsonValueKind.Object)
+                {
+                    var parsedLimits = ParseRateLimits(rateLimits, eventTime);
+                    if (parsedLimits is not null && (latestLimits is null || parsedLimits.EventAt > latestLimits.EventAt)) latestLimits = parsedLimits;
+                }
+                if (payload.TryGetProperty("info", out var info) && info.ValueKind == JsonValueKind.Object &&
+                    info.TryGetProperty("total_token_usage", out var totalUsage) && totalUsage.ValueKind == JsonValueKind.Object)
                 {
                     latest = ReadUsage(totalUsage);
                 }
-                else if (info.TryGetProperty("last_token_usage", out var lastUsage) && lastUsage.ValueKind == JsonValueKind.Object)
+                else if (payload.TryGetProperty("info", out info) && info.ValueKind == JsonValueKind.Object &&
+                    info.TryGetProperty("last_token_usage", out var lastUsage) && lastUsage.ValueKind == JsonValueKind.Object)
                 {
                     fallback.Add(ReadUsage(lastUsage));
                 }
@@ -240,7 +284,7 @@ public sealed class CodexUsageReader
             catch (JsonException) { }
         }
 
-        return latest ?? fallback.ToImmutable();
+        return CachedSessionSummary.FromFile(file, latest ?? fallback.ToImmutable(), latestLimits);
     }
 
     private static SessionInfo? ReadSessionInfo(FileInfo file)
@@ -381,5 +425,12 @@ public sealed class CodexUsageReader
 
         public void Add(UsageSurface surface, UsageTotals usage) => (surface == UsageSurface.Work ? _work : _codex).Add(usage);
         public UsageBySurface ToImmutable() => new(_codex.ToImmutable(), _work.ToImmutable());
+    }
+
+    private sealed record CachedSessionSummary(long Length, DateTime LastWriteTimeUtc, UsageTotals Usage, RateLimitSnapshot? RateLimits)
+    {
+        public bool Matches(FileInfo file) => Length == file.Length && LastWriteTimeUtc == file.LastWriteTimeUtc;
+        public static CachedSessionSummary FromFile(FileInfo file, UsageTotals usage, RateLimitSnapshot? rateLimits) =>
+            new(file.Length, file.LastWriteTimeUtc, usage, rateLimits);
     }
 }

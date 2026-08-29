@@ -71,11 +71,11 @@ public sealed class WidgetSettings
     public double? Left { get; set; }
     public double? Top { get; set; }
 
-    public static WidgetSettings Load()
+    public static WidgetSettings Load(string? pathOverride = null)
     {
+        var path = pathOverride ?? GetSettingsPath();
         try
         {
-            var path = GetSettingsPath();
             var settings = File.Exists(path)
                 ? JsonSerializer.Deserialize<WidgetSettings>(File.ReadAllText(path), JsonOptions) ?? new WidgetSettings()
                 : new WidgetSettings();
@@ -106,7 +106,11 @@ public sealed class WidgetSettings
             settings.Scale = Math.Clamp(settings.Scale, 0.5d, 1.8d);
             return settings;
         }
-        catch { return new WidgetSettings(); }
+        catch
+        {
+            BackupCorruptSettings(path);
+            return new WidgetSettings();
+        }
     }
 
     public void Save()
@@ -124,4 +128,18 @@ public sealed class WidgetSettings
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "CodexDragonQuotaWidget",
         "settings.json");
+
+    private static void BackupCorruptSettings(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return;
+            var backupPath = $"{path}.corrupt-{DateTimeOffset.Now:yyyyMMddHHmmssfff}.bak";
+            File.Move(path, backupPath);
+        }
+        catch
+        {
+            // Loading defaults must remain possible even when backup creation fails.
+        }
+    }
 }
