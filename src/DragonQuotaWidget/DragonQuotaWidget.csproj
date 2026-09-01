@@ -13,7 +13,7 @@
     <Authors>Local developer</Authors>
     <Product>傻龙插件</Product>
     <Title>傻龙插件</Title>
-    <Description>傻龙插件：本地显示 Codex/Work 与 AGY 额度、滚动 Token 与本轮对话统计。</Description>
+    <Description>傻龙插件：本地显示 Codex/Work、AGY 与豆包额度、滚动 Token 与本轮对话统计。</Description>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\dragon-girl.png" />

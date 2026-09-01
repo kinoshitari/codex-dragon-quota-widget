@@ -68,5 +68,8 @@ public sealed record RateLimitSnapshot(RateWindow? Primary, RateWindow? Secondar
     public bool IsStale { get; init; }
     public DateTimeOffset? LastSuccessfulFetchAt { get; init; }
 }
-public sealed record RateWindow(double UsedPercent, int? WindowMinutes, DateTimeOffset? ResetsAt);
+public sealed record RateWindow(double UsedPercent, int? WindowMinutes, DateTimeOffset? ResetsAt)
+{
+    public string? UsedPercentText { get; init; }
+}
 public sealed record CreditSnapshot(bool HasCredits, bool Unlimited, string? Balance);

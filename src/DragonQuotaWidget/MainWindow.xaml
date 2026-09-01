@@ -112,6 +112,7 @@
                 <MenuItem Header="左键模式 / 数据源">
                     <MenuItem x:Name="CodexQuotaModeMenuItem" Header="Codex 额度" IsCheckable="True" Click="CodexQuotaModeMenuItem_Click" />
                     <MenuItem x:Name="AgyQuotaModeMenuItem" Header="AGY 额度" IsCheckable="True" Click="AgyQuotaModeMenuItem_Click" />
+                    <MenuItem x:Name="DoubaoQuotaModeMenuItem" Header="豆包额度" IsCheckable="True" Click="DoubaoQuotaModeMenuItem_Click" />
                     <MenuItem x:Name="InteractionDisplayModeMenuItem" Header="互动提示" IsCheckable="True" Click="InteractionDisplayModeMenuItem_Click" />
                 </MenuItem>
                 <MenuItem Header="显示额度信息" Click="ShowInfoMenuItem_Click" />

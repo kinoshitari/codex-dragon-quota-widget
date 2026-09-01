@@ -40,6 +40,8 @@ public static class Program
             RunTest("Activity: Parallel session completion is observed", () => TestActivityMonitor_ParallelSessions(testDir));
             RunTest("Models: Existing Codex/Work calculation and serialization compatibility", TestUsageModels_CodexCompatibility);
             RunTest("Settings: Legacy QuotaInfo mode maps to Codex quota", TestSettings_LegacyQuotaInfoAlias);
+            RunTest("Doubao: Quota text parses current and seven-day windows", TestDoubaoQuotaParsing);
+            RunTest("Doubao: Source toggle cycles Codex, AGY, and Doubao", TestDoubaoSourceCycle);
             RunTest("Settings: Corrupt JSON is backed up before defaults are restored", () => TestSettings_CorruptFileBackup(testDir));
             RunTest("Placement: Dragon faces inward on both halves of the work area", TestPlacement_FacesInward);
 
@@ -739,6 +741,43 @@ public static class Program
         AssertEqual(LeftClickDisplayMode.Interaction, settings.LeftClickMode, "Fresh installs keep interaction as the default left-click mode");
         AssertEqual(UsageSource.Codex, settings.UsageSource, "Interaction mode defaults its remembered data source to Codex");
         Assert(!settings.PinInfoPanel, "Fresh installs keep the quota panel unpinned");
+    }
+
+    private static void TestDoubaoQuotaParsing()
+    {
+        var now = new DateTimeOffset(2026, 9, 1, 8, 30, 0, TimeSpan.FromHours(8));
+        var snapshot = DoubaoUsageReader.ParseQuotaTexts(
+        [
+            "赠送时长至10月1日",
+            "当前时段",
+            "已用 1%",
+            "4 小时 48 分钟后重置",
+            "近 7 天",
+            "已用 <1%",
+            "9月8日 08:28 重置"
+        ], now);
+
+        var current = snapshot.RateLimits?.Primary;
+        var sevenDays = snapshot.RateLimits?.Secondary;
+        Assert(current is not null, "Current-period quota must be parsed");
+        Assert(sevenDays is not null, "Seven-day quota must be parsed");
+        AssertEqual(300, current!.WindowMinutes, "Current period maps to the existing 5h card");
+        AssertEqual(1d, current.UsedPercent, "Current period used percent");
+        AssertEqual("1%", current.UsedPercentText, "Exact current period percent text");
+        AssertEqual(now.AddHours(4).AddMinutes(48), current.ResetsAt, "Relative reset time");
+        AssertEqual(10080, sevenDays!.WindowMinutes, "Near seven days maps to the weekly card");
+        AssertEqual(0.5d, sevenDays.UsedPercent, "Less-than one percent gets a bounded progress value");
+        AssertEqual("<1%", sevenDays.UsedPercentText, "Less-than display text is preserved");
+        AssertEqual(new DateTimeOffset(2026, 9, 8, 8, 28, 0, TimeSpan.FromHours(8)), sevenDays.ResetsAt, "Absolute reset time");
+        AssertEqual("赠送时长至10月1日", snapshot.Warning, "Entitlement note is retained");
+    }
+
+    private static void TestDoubaoSourceCycle()
+    {
+        AssertEqual(UsageSource.Agy, MainWindow.NextUsageSource(UsageSource.Codex), "Codex toggles to AGY");
+        AssertEqual(UsageSource.Doubao, MainWindow.NextUsageSource(UsageSource.Agy), "AGY toggles to Doubao");
+        AssertEqual(UsageSource.Codex, MainWindow.NextUsageSource(UsageSource.Doubao), "Doubao toggles to Codex");
+        AssertEqual(LeftClickDisplayMode.DoubaoQuota, Enum.Parse<LeftClickDisplayMode>("DoubaoQuota"), "Settings enum includes Doubao quota");
     }
 
     private static void TestSettings_CorruptFileBackup(string rootDir)

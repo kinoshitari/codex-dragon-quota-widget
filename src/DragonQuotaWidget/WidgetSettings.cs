@@ -12,6 +12,7 @@ public enum LeftClickDisplayMode
 {
     CodexQuota,
     AgyQuota,
+    DoubaoQuota,
     Interaction,
     // Backward compatibility for v2 settings
     QuotaInfo = CodexQuota
@@ -21,7 +22,8 @@ public enum LeftClickDisplayMode
 public enum UsageSource
 {
     Codex,
-    Agy
+    Agy,
+    Doubao
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -43,7 +45,7 @@ public enum SummaryTimeRange
 
 public sealed class WidgetSettings
 {
-    private const int CurrentSchemaVersion = 4;
+    private const int CurrentSchemaVersion = 5;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -96,6 +98,10 @@ public sealed class WidgetSettings
                 else if (settings.LeftClickMode == LeftClickDisplayMode.AgyQuota)
                 {
                     settings.UsageSource = UsageSource.Agy;
+                }
+                else if (settings.LeftClickMode == LeftClickDisplayMode.DoubaoQuota)
+                {
+                    settings.UsageSource = UsageSource.Doubao;
                 }
                 settings.SettingsSchemaVersion = CurrentSchemaVersion;
             }

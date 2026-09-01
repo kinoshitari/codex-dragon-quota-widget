@@ -27,6 +27,7 @@ public partial class MainWindow : Window
     private const int WeeklyWindowMinutes = 7 * 24 * 60;
     private readonly CodexUsageReader _codexReader = new();
     private readonly AntigravityUsageReader _agyReader = new();
+    private readonly DoubaoUsageReader _doubaoReader = new();
     private readonly CodexActivityMonitor _activityMonitor = new();
 
     private UsageSource SelectedSource
@@ -53,7 +54,13 @@ public partial class MainWindow : Window
     private readonly MediaPlayer _releaseAudio = new();
     private UsageSnapshot? _codexSnapshot;
     private UsageSnapshot? _agySnapshot;
-    private UsageSnapshot? SelectedSnapshot => SelectedSource == UsageSource.Agy ? _agySnapshot : _codexSnapshot;
+    private UsageSnapshot? _doubaoSnapshot;
+    private UsageSnapshot? SelectedSnapshot => SelectedSource switch
+    {
+        UsageSource.Agy => _agySnapshot,
+        UsageSource.Doubao => _doubaoSnapshot,
+        _ => _codexSnapshot
+    };
     private bool _dragging;
     private bool _temporaryInfoPanelVisible;
     private bool _activityInitialized;
@@ -237,18 +244,21 @@ public partial class MainWindow : Window
         try
         {
             var source = SelectedSource;
-            var sourceLabel = source == UsageSource.Agy ? "AGY" : "Codex";
+            var sourceLabel = FormatSource(source);
             if (manual)
             {
                 StatusText.Text = $"正在刷新本地 {sourceLabel} 数据…";
                 StatusDot.Fill = new SolidColorBrush(Color.FromRgb(255, 203, 107));
             }
-            var snapshot = await Task.Run(() =>
-                source == UsageSource.Agy ? _agyReader.ReadSnapshot() : _codexReader.ReadSnapshot());
-            if (source == UsageSource.Agy)
-                _agySnapshot = snapshot;
-            else
-                _codexSnapshot = snapshot;
+            var snapshot = await Task.Run(() => source switch
+            {
+                UsageSource.Agy => _agyReader.ReadSnapshot(),
+                UsageSource.Doubao => _doubaoReader.ReadSnapshot(forceRefresh: manual),
+                _ => _codexReader.ReadSnapshot()
+            });
+            if (source == UsageSource.Agy) _agySnapshot = snapshot;
+            else if (source == UsageSource.Doubao) _doubaoSnapshot = snapshot;
+            else _codexSnapshot = snapshot;
 
             if (source == SelectedSource)
                 RenderSnapshot();
@@ -312,7 +322,7 @@ public partial class MainWindow : Window
     private void RenderSnapshot()
     {
         var snapshot = SelectedSnapshot;
-        var sourceLabel = SelectedSource == UsageSource.Agy ? "AGY" : "Codex";
+        var sourceLabel = FormatSource(SelectedSource);
         if (snapshot is null)
         {
             TitleText.Text = $"{sourceLabel} 数据";
@@ -328,13 +338,21 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_mode == WidgetMode.Quota)
+        if (SelectedSource == UsageSource.Doubao && _mode is not (WidgetMode.Quota or WidgetMode.FiveHourQuota))
         {
-            RenderQuota(snapshot, WeeklyWindowMinutes, "每周额度", "每周剩余额度");
+            RenderDoubaoQuotaOnlyState();
+        }
+        else if (_mode == WidgetMode.Quota)
+        {
+            var title = SelectedSource == UsageSource.Doubao ? "近 7 天额度" : "每周额度";
+            var remaining = SelectedSource == UsageSource.Doubao ? "近 7 天剩余额度" : "每周剩余额度";
+            RenderQuota(snapshot, WeeklyWindowMinutes, title, remaining);
         }
         else if (_mode == WidgetMode.FiveHourQuota)
         {
-            RenderQuota(snapshot, FiveHourWindowMinutes, "5h 额度", "5h 剩余额度");
+            var title = SelectedSource == UsageSource.Doubao ? "当前时段额度" : "5h 额度";
+            var remaining = SelectedSource == UsageSource.Doubao ? "当前时段剩余额度" : "5h 剩余额度";
+            RenderQuota(snapshot, FiveHourWindowMinutes, title, remaining);
         }
         else if (_mode == WidgetMode.Summary)
         {
@@ -362,16 +380,19 @@ public partial class MainWindow : Window
     private void RenderQuota(UsageSnapshot snapshot, int targetWindowMinutes, string title, string remainingLabel)
     {
         var source = SelectedSource;
-        var sourceLabel = source == UsageSource.Agy ? "AGY" : "Codex";
+        var sourceLabel = FormatSource(source);
         TitleText.Text = $"{sourceLabel} {title}";
         var window = SelectRateWindow(snapshot.RateLimits, targetWindowMinutes);
         if (window is null)
         {
             MainValueText.Text = "--";
             MainLabelText.Text = $"暂无 {FormatWindow(targetWindowMinutes)}额度快照";
-            MainSubText.Text = source == UsageSource.Agy
-                ? "暂无可用 AGY 额度快照"
-                : "产生一次 Codex 响应后再刷新";
+            MainSubText.Text = source switch
+            {
+                UsageSource.Agy => "暂无可用 AGY 额度快照",
+                UsageSource.Doubao => "请启动并登录豆包电脑版后刷新",
+                _ => "产生一次 Codex 响应后再刷新"
+            };
             UsageProgress.Value = 0;
             Detail1Label.Text = "已使用";
             Detail1Value.Text = "--";
@@ -383,14 +404,16 @@ public partial class MainWindow : Window
         }
 
         var remaining = Math.Clamp(100d - window.UsedPercent, 0d, 100d);
-        MainValueText.Text = $"{remaining:0.#}%";
+        MainValueText.Text = FormatRemainingPercent(window, remaining);
         MainLabelText.Text = remainingLabel;
         MainSubText.Text = snapshot.RateLimits?.IsStale == true
             ? $"{sourceLabel} 旧缓存 · {FormatWindow(window.WindowMinutes)}"
-            : $"{sourceLabel} 汇总 · {FormatWindow(window.WindowMinutes)}";
+            : source == UsageSource.Doubao
+                ? $"豆包官方额度 · {FormatWindow(window.WindowMinutes)}"
+                : $"{sourceLabel} 汇总 · {FormatWindow(window.WindowMinutes)}";
         UsageProgress.Value = remaining;
         Detail1Label.Text = "已使用";
-        Detail1Value.Text = $"{window.UsedPercent:0.#}%";
+        Detail1Value.Text = window.UsedPercentText ?? $"{window.UsedPercent:0.#}%";
         Detail2Label.Text = "重置倒计时";
         Detail2Value.Text = FormatResetCountdown(window.ResetsAt);
         Detail3Label.Text = "重置时间";
@@ -405,10 +428,24 @@ public partial class MainWindow : Window
         return null;
     }
 
+    private void RenderDoubaoQuotaOnlyState()
+    {
+        TitleText.Text = "豆包额度";
+        MainValueText.Text = "--";
+        MainLabelText.Text = "豆包仅提供额度数据";
+        MainSubText.Text = "请选择“当前”或“近7天”";
+        UsageProgress.Value = 0;
+        Detail1Label.Text = "当前时段";
+        Detail2Label.Text = "近 7 天";
+        Detail3Label.Text = "数据来源";
+        Detail1Value.Text = Detail2Value.Text = "--";
+        Detail3Value.Text = "豆包客户端";
+    }
+
     private void RenderTokenPeriod(UsageSnapshot snapshot)
     {
         var source = SelectedSource;
-        var sourceLabel = source == UsageSource.Agy ? "AGY" : "Codex";
+        var sourceLabel = FormatSource(source);
         var isRolling = _settings.TokenTimeRange == TokenTimeRange.Last24Hours;
         var period = isRolling ? snapshot.Last24Hours : snapshot.Today;
 
@@ -447,7 +484,7 @@ public partial class MainWindow : Window
     private void RenderSummaryPeriod(UsageSnapshot snapshot)
     {
         var source = SelectedSource;
-        var sourceLabel = source == UsageSource.Agy ? "AGY" : "Codex";
+        var sourceLabel = FormatSource(source);
         var (period, baseTitle) = _settings.SummaryTimeRange switch
         {
             SummaryTimeRange.Last30Days => (snapshot.Last30Days, "30天 Token"),
@@ -490,7 +527,7 @@ public partial class MainWindow : Window
     private void RenderConversation(UsageSnapshot snapshot)
     {
         var source = SelectedSource;
-        var sourceLabel = source == UsageSource.Agy ? "AGY" : "Codex";
+        var sourceLabel = FormatSource(source);
         var conversation = snapshot.CurrentConversation;
         if (conversation is null)
         {
@@ -528,6 +565,24 @@ public partial class MainWindow : Window
         >= 1_000 => $"{value / 1_000d:0.##}K",
         _ => value.ToString("N0", CultureInfo.InvariantCulture)
     };
+
+    private static string FormatSource(UsageSource source) => source switch
+    {
+        UsageSource.Agy => "AGY",
+        UsageSource.Doubao => "豆包",
+        _ => "Codex"
+    };
+
+    private static string FormatRemainingPercent(RateWindow window, double remaining)
+    {
+        var text = window.UsedPercentText;
+        if (text is { Length: > 2 } && text[0] == '<' && text[^1] == '%' &&
+            double.TryParse(text[1..^1], NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var upperBound))
+        {
+            return $">{Math.Clamp(100d - upperBound, 0d, 100d):0.#}%";
+        }
+        return $"{remaining:0.#}%";
+    }
 
     private static string FormatWindow(int? minutes)
     {
@@ -579,6 +634,8 @@ public partial class MainWindow : Window
     {
         var active = new SolidColorBrush(Color.FromArgb(90, 190, 179, 255));
         var inactive = new SolidColorBrush(Color.FromArgb(31, 255, 255, 255));
+        QuotaModeButton.Content = SelectedSource == UsageSource.Doubao ? "近7天" : "每周";
+        FiveHourQuotaModeButton.Content = SelectedSource == UsageSource.Doubao ? "当前" : "5h";
         QuotaModeButton.Background = _mode == WidgetMode.Quota ? active : inactive;
         FiveHourQuotaModeButton.Background = _mode == WidgetMode.FiveHourQuota ? active : inactive;
         SummaryModeButton.Background = _mode == WidgetMode.Summary ? active : inactive;
@@ -604,12 +661,16 @@ public partial class MainWindow : Window
         PinInfoPanelButton.ToolTip = _settings.PinInfoPanel
             ? "取消固定额度提示框，恢复自动淡出"
             : "固定额度提示框，使其不再自动淡出";
-        SourceToggleButton.Content = SelectedSource == UsageSource.Agy ? "AGY" : "Codex";
-        SourceToggleButton.ToolTip = SelectedSource == UsageSource.Agy
-            ? "当前显示 AGY；点击切换到 Codex"
-            : "当前显示 Codex；点击切换到 AGY";
+        SourceToggleButton.Content = FormatSource(SelectedSource);
+        SourceToggleButton.ToolTip = SelectedSource switch
+        {
+            UsageSource.Codex => "当前显示 Codex；点击切换到 AGY",
+            UsageSource.Agy => "当前显示 AGY；点击切换到豆包",
+            _ => "当前显示豆包；点击切换到 Codex"
+        };
         CodexQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.CodexQuota;
         AgyQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.AgyQuota;
+        DoubaoQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.DoubaoQuota;
         InteractionDisplayModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.Interaction;
         LockPositionMenuItem.IsChecked = _settings.LockPosition;
         PinInfoPanelMenuItem.IsChecked = _settings.PinInfoPanel;
@@ -651,6 +712,12 @@ public partial class MainWindow : Window
         {
             _settings.UsageSource = UsageSource.Agy;
         }
+        else if (mode == LeftClickDisplayMode.DoubaoQuota)
+        {
+            _settings.UsageSource = UsageSource.Doubao;
+            _mode = WidgetMode.FiveHourQuota;
+            _settings.Mode = _mode;
+        }
         _settings.Save();
         UpdateModeButtons();
         RenderSnapshot();
@@ -660,12 +727,20 @@ public partial class MainWindow : Window
     private void ToggleUsageSource()
     {
         if (Application.Current.Properties["ForceUsageSource"] is UsageSource) return;
-        _settings.UsageSource = SelectedSource == UsageSource.Agy ? UsageSource.Codex : UsageSource.Agy;
-        if (_settings.LeftClickMode is LeftClickDisplayMode.CodexQuota or LeftClickDisplayMode.AgyQuota)
+        _settings.UsageSource = NextUsageSource(SelectedSource);
+        if (_settings.UsageSource == UsageSource.Doubao)
         {
-            _settings.LeftClickMode = _settings.UsageSource == UsageSource.Agy
-                ? LeftClickDisplayMode.AgyQuota
-                : LeftClickDisplayMode.CodexQuota;
+            _mode = WidgetMode.FiveHourQuota;
+            _settings.Mode = _mode;
+        }
+        if (_settings.LeftClickMode is LeftClickDisplayMode.CodexQuota or LeftClickDisplayMode.AgyQuota or LeftClickDisplayMode.DoubaoQuota)
+        {
+            _settings.LeftClickMode = _settings.UsageSource switch
+            {
+                UsageSource.Agy => LeftClickDisplayMode.AgyQuota,
+                UsageSource.Doubao => LeftClickDisplayMode.DoubaoQuota,
+                _ => LeftClickDisplayMode.CodexQuota
+            };
         }
         _settings.Save();
         UpdateModeButtons();
@@ -673,6 +748,13 @@ public partial class MainWindow : Window
         ShowInfoPanelTemporarily();
         _ = RefreshAsync(true);
     }
+
+    public static UsageSource NextUsageSource(UsageSource source) => source switch
+    {
+        UsageSource.Codex => UsageSource.Agy,
+        UsageSource.Agy => UsageSource.Doubao,
+        _ => UsageSource.Codex
+    };
 
     private void TogglePositionLock()
     {
@@ -727,7 +809,7 @@ public partial class MainWindow : Window
     private void CompleteDragonInteraction()
     {
         PlaySound(_releaseAudio);
-        if (_settings.LeftClickMode is LeftClickDisplayMode.CodexQuota or LeftClickDisplayMode.AgyQuota)
+        if (_settings.LeftClickMode is LeftClickDisplayMode.CodexQuota or LeftClickDisplayMode.AgyQuota or LeftClickDisplayMode.DoubaoQuota)
         {
             ShowInfoPanelTemporarily();
             _ = RefreshAsync(true);
@@ -1057,6 +1139,7 @@ public partial class MainWindow : Window
     private void ConversationMenuItem_Click(object sender, RoutedEventArgs e) => SetMode(WidgetMode.Conversation);
     private void CodexQuotaModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.CodexQuota);
     private void AgyQuotaModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.AgyQuota);
+    private void DoubaoQuotaModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.DoubaoQuota);
     private void InteractionDisplayModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.Interaction);
     private void HideInfoButton_Click(object sender, RoutedEventArgs e) => HideInfoPanel();
     private void ShowInfoMenuItem_Click(object sender, RoutedEventArgs e) => ShowInfoPanelTemporarily();

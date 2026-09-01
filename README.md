@@ -1,13 +1,13 @@
 # 傻龙插件
 
-一个面向 Windows Codex 与 AGY 桌面端的透明置顶伴生挂件。它参考了 [DeepSeek Balance Whale Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget) 的拖拽、玩偶回弹与按压音效交互，针对本地 Codex 与 AGY 数据源全新实现。
+一个面向 Windows Codex、AGY 与豆包桌面端的透明置顶伴生挂件。它参考了 [DeepSeek Balance Whale Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget) 的拖拽、玩偶回弹与按压音效交互，针对三种本地数据源全新实现。
 
 > 本项目采用伴生挂件架构：不修改客户端安装目录，可在屏幕内自由放置。
 
 ## 功能
 
-- 鼠标经过挂件不会触发互动或刷新；右键可在“Codex 额度”、“AGY 额度”和“互动提示”三种模式之间切换左键行为，另有 60 秒自动刷新。
-- 选择“Codex 额度”或“AGY 额度”模式时，左键点击龙娘临时显示信息框并刷新所选数据源；选择“互动提示”模式时，左键显示互动气泡并在后台刷新当前数据源。
+- 鼠标经过挂件不会触发互动或刷新；右键可在“Codex 额度”、“AGY 额度”、“豆包额度”和“互动提示”之间切换左键行为，另有 60 秒自动刷新。
+- 选择任一额度模式时，左键点击龙娘临时显示信息框并刷新所选数据源；选择“互动提示”模式时，左键显示互动气泡并在后台刷新当前数据源。
 - “每周额度”与“5h 额度”分别读取 `window_minutes=10080` 和 `window_minutes=300` 的额度窗口，显示剩余百分比、重置倒计时和重置时间。
 - “长期消耗”模式位于额度与今日 Token 之间，可在设置中切换过去 7 天、过去 30 天或全部本地记录。
 - Token 模式可在设置中选择“当日”或“过去 24 小时”，显示输入、输出、缓存命中率；Codex 模式单独列出 Work 与 Codex 的 Token 分流，AGY 模式采用专属隔离统计。
@@ -29,6 +29,7 @@
 
 - Codex 额度：从全部可读 Work 与 Codex 会话摘要中取时间最新的一条 `rate_limits`，视为账户级合并额度，不再限于最近 8 个文件。右键手动刷新不会主动向 OpenAI 发送请求。
 - AGY 额度：调用本机已登录的 AGY 官方 `/usage` 命令读取 Gemini 模型每周及 5h 额度窗口；多个 Gemini 组采用最受限窗口。刷新失败时只允许短时间显示明确标记的旧缓存，超过 5 分钟后不再显示过期额度。
+- 豆包额度：在豆包电脑版已运行且已登录时，通过 Windows UI Automation 临时打开“额度状态”，读取“当前时段”和“近 7 天”的已用比例与重置时间，再自动返回原界面；不读取 Cookie、令牌或账号数据文件。右上角数据源按钮按 `Codex → AGY → 豆包` 循环切换。
 - Work/Codex 分类：`originator=codex_work_desktop` 计入 Work；普通 `Codex Desktop` 会话计入 Codex；具备父会话 ID 的子任务继承父会话分类。
 - AGY Token 统计：从本地 AGY 会话 SQLite 数据库直接解析 Protobuf 轨迹元数据，按 AGY 专属 surface 独立聚合，不与 Work/Codex 混合。
 - 当日输入/输出：按事件时间转换到本地时区后，累计自然日内的输入和输出 Token。
@@ -54,7 +55,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-widget.ps1
 
 也可以直接双击插件根目录中的 `Launch-Dragon-Quota-Widget.bat`。
 
-右键挂件可在“Codex 额度”、“AGY 额度”和“互动提示”之间切换左键模式，也可显示或固定额度信息、刷新所选数据源、切换额度/Token/本轮模式、调整大小或退出。按住龙娘可自由拖动，松手会回弹并在屏幕边缘限制完整显示；龙娘移到屏幕右半侧时自动镜像。额度面板开关以龙娘右下角为固定锚点，不会带动立绘跳位。
+右键挂件可在“Codex 额度”、“AGY 额度”、“豆包额度”和“互动提示”之间切换左键模式，也可显示或固定额度信息、刷新所选数据源、切换额度/Token/本轮模式、调整大小或退出。按住龙娘可自由拖动，松手会回弹并在屏幕边缘限制完整显示；龙娘移到屏幕右半侧时自动镜像。额度面板开关以龙娘右下角为固定锚点，不会带动立绘跳位。
 
 命令行获取用量 JSON：
 
