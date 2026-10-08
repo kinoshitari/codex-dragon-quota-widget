@@ -65,6 +65,8 @@ public partial class MainWindow : Window
     private bool _temporaryInfoPanelVisible;
     private bool _activityInitialized;
     private bool _positionInitialized;
+    private bool _panelOnRight;
+    private bool _updatingMirror;
     private bool _resetBubblePinned;
     private bool _codexIsWorking;
     private string _latestActivityStatus = "正在处理任务…";
@@ -383,6 +385,13 @@ public partial class MainWindow : Window
         var sourceLabel = FormatSource(source);
         TitleText.Text = $"{sourceLabel} {title}";
         var window = SelectRateWindow(snapshot.RateLimits, targetWindowMinutes);
+        // Providers can omit a bucket once it is exhausted while still
+        // returning its sibling window. Keep a complete absence as "--",
+        // but render that partial snapshot as zero remaining quota.
+        if (window is null && HasAnyRateWindow(snapshot.RateLimits))
+        {
+            window = new RateWindow(100d, targetWindowMinutes, null);
+        }
         if (window is null)
         {
             MainValueText.Text = "--";
@@ -427,6 +436,9 @@ public partial class MainWindow : Window
         if (limits.Secondary?.WindowMinutes == targetWindowMinutes) return limits.Secondary;
         return null;
     }
+
+    private static bool HasAnyRateWindow(RateLimitSnapshot? limits) =>
+        limits?.Primary is not null || limits?.Secondary is not null;
 
     private void RenderDoubaoQuotaOnlyState()
     {
@@ -546,7 +558,7 @@ public partial class MainWindow : Window
         var usage = conversation.Tokens;
         TitleText.Text = $"{sourceLabel} 本轮 Token";
         MainValueText.Text = FormatTokens(usage.TotalTokens);
-        MainLabelText.Text = "输入 + 输出";
+        MainLabelText.Text = "整条对话累计";
         var surfaceLabel = source == UsageSource.Agy ? "AGY" : conversation.Surface.ToString();
         MainSubText.Text = $"{surfaceLabel} 模式 · {conversation.StartedAt.ToLocalTime():MM-dd HH:mm} 开始";
         UsageProgress.Value = usage.CacheHitRate * 100d;
@@ -1056,12 +1068,15 @@ public partial class MainWindow : Window
     private void ApplyScale(double scale, bool persist = true)
     {
         scale = Math.Clamp(Math.Round(scale, 1), 0.5, 1.8);
+        var previousScale = _settings.Scale;
         _settings.Scale = scale;
         var keepDragonAnchor = _positionInitialized &&
             !double.IsNaN(Left) && !double.IsNaN(Top);
         var previousWidth = !double.IsNaN(Width) && Width > 0 ? Width : ActualWidth;
         var previousHeight = !double.IsNaN(Height) && Height > 0 ? Height : ActualHeight;
-        var anchorRight = Left + previousWidth;
+        var dragonCenter = Left + (_panelOnRight
+            ? ArtBaseWidth * previousScale / 2d
+            : previousWidth - ArtBaseWidth * previousScale / 2d);
         var anchorBottom = Top + previousHeight;
         var baseWidth = IsInfoPanelVisible ? FullBaseWidth : ArtBaseWidth;
         var baseHeight = IsInfoPanelVisible ? FullBaseHeight : ArtBaseHeight;
@@ -1070,7 +1085,9 @@ public partial class MainWindow : Window
         RootGrid.LayoutTransform = new ScaleTransform(scale, scale);
         if (keepDragonAnchor)
         {
-            Left = anchorRight - Width;
+            Left = dragonCenter - (_panelOnRight
+                ? ArtBaseWidth * scale / 2d
+                : Width - ArtBaseWidth * scale / 2d);
             Top = anchorBottom - Height;
         }
         if (persist) _settings.Save();
@@ -1101,10 +1118,34 @@ public partial class MainWindow : Window
 
     private void UpdateDragonMirror()
     {
-        if (double.IsNaN(Left) || double.IsNaN(Width) || Width <= 0) return;
-        var work = GetCurrentWorkArea();
-        var dragonCenterX = Left + Width - ArtBaseWidth * _settings.Scale / 2d;
-        DragonMirror.ScaleX = WidgetPlacement.GetFacingScaleX(dragonCenterX, work.Left, work.Width);
+        if (_updatingMirror || double.IsNaN(Left) || double.IsNaN(Width) || Width <= 0) return;
+        _updatingMirror = true;
+        try
+        {
+            var work = GetCurrentWorkArea();
+            var artHalfWidth = ArtBaseWidth * _settings.Scale / 2d;
+            var dragonCenterX = Left + (_panelOnRight ? artHalfWidth : Width - artHalfWidth);
+            var facing = WidgetPlacement.GetFacingScaleX(dragonCenterX, work.Left, work.Width);
+            var panelOnRight = facing < 0;
+            DragonMirror.ScaleX = facing;
+            if (_panelOnRight != panelOnRight)
+            {
+                _panelOnRight = panelOnRight;
+                // Changing sides must keep the character at the same desktop
+                // position, including when its information panel is hidden.
+                Left = dragonCenterX - (_panelOnRight ? artHalfWidth : Width - artHalfWidth);
+            }
+            DragonHost.HorizontalAlignment = _panelOnRight ? System.Windows.HorizontalAlignment.Left : System.Windows.HorizontalAlignment.Right;
+            DataPanel.HorizontalAlignment = _panelOnRight ? System.Windows.HorizontalAlignment.Right : System.Windows.HorizontalAlignment.Left;
+            DataPanel.Margin = _panelOnRight ? new Thickness(0, 10, 8, 0) : new Thickness(8, 10, 0, 0);
+            QuotaTail.RenderTransformOrigin = new Point(0.5, 0.5);
+            QuotaTail.RenderTransform = new ScaleTransform(_panelOnRight ? -1 : 1, 1);
+            InteractionBubble.HorizontalAlignment = _panelOnRight ? System.Windows.HorizontalAlignment.Right : System.Windows.HorizontalAlignment.Left;
+            InteractionBubble.Margin = _panelOnRight ? new Thickness(0, 9, 4, 0) : new Thickness(4, 9, 0, 0);
+            BubbleTail.HorizontalAlignment = _panelOnRight ? System.Windows.HorizontalAlignment.Left : System.Windows.HorizontalAlignment.Right;
+            BubbleTail.Margin = _panelOnRight ? new Thickness(32, 0, 0, 0) : new Thickness(0, 0, 32, 0);
+        }
+        finally { _updatingMirror = false; }
     }
 
     private Rect GetCurrentWorkArea()

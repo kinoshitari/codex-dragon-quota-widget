@@ -37,6 +37,9 @@ public static class Program
             RunTest("Quota: Multiple Gemini groups use the most constrained window", TestQuotaParsing_MultipleGeminiGroups);
             RunTest("Quota: Fresh cache, stale fallback, and hard expiry", TestQuotaCommandRunner_Caching);
             RunTest("Codex: Quota discovery is not limited to the newest eight files", () => TestCodexQuotaDiscovery_BeyondNewestEight(testDir));
+            RunTest("Codex: Cumulative deltas, duplicates, 24h boundary and newest copy", () => TestCodexTokenAccounting(testDir));
+            RunTest("Codex: Resumed conversation retains earlier history outside timed windows", () => TestResumedConversationHistory(testDir));
+            RunTest("Placement: Quota panel mirrors inward and retains the dragon anchor", TestPanelMirrorLayout);
             RunTest("Activity: Parallel session completion is observed", () => TestActivityMonitor_ParallelSessions(testDir));
             RunTest("Models: Existing Codex/Work calculation and serialization compatibility", TestUsageModels_CodexCompatibility);
             RunTest("Settings: Legacy QuotaInfo mode maps to Codex quota", TestSettings_LegacyQuotaInfoAlias);
@@ -624,6 +627,183 @@ public static class Program
         AssertEqual(3, invocationCount, "Expired stale cache should trigger another query");
         Assert(snap4.RateLimits is null, "Expired stale quota must not be displayed");
         Assert(snap4.Warning?.Contains("已过期", StringComparison.Ordinal) == true, "Hard expiry must be disclosed");
+    }
+
+    private static void TestResumedConversationHistory(string rootDir)
+    {
+        var root = Path.Combine(rootDir, "resumed-history");
+        var sessions = Path.Combine(root, "sessions");
+        Directory.CreateDirectory(sessions);
+        var now = DateTimeOffset.Now;
+        var meta = JsonSerializer.Serialize(new
+        {
+            timestamp = now.AddDays(-40), type = "session_meta",
+            payload = new { id = "resumed", originator = "work_desktop", thread_source = "user" }
+        });
+        string Event(long total, long last, DateTimeOffset? at = null) => JsonSerializer.Serialize(new
+        {
+            timestamp = at ?? now.AddMinutes(-5), type = "event_msg", payload = new
+            {
+                type = "token_count", info = new
+                {
+                    total_token_usage = new { input_tokens = total, output_tokens = total / 10, cached_input_tokens = total / 2 },
+                    last_token_usage = new { input_tokens = last, output_tokens = last / 10, cached_input_tokens = last / 2 }
+                }
+            }
+        });
+        var path = Path.Combine(sessions, "resumed.jsonl");
+        File.WriteAllLines(path, new[] { meta, Event(1000, 100), Event(1500, 50), Event(1500, 50) });
+        var reader = new CodexUsageReader(root);
+        var snapshot = reader.ReadSnapshot();
+        AssertEqual(new UsageTotals(1500, 150, 750, 0), snapshot.CurrentConversation!.Tokens, "Whole history includes the initial cumulative baseline");
+        AssertEqual(new UsageTotals(600, 60, 300, 0), snapshot.Last24Hours.Work, "Earlier history is not charged to the last 24 hours");
+        AssertEqual(snapshot.CurrentConversation.Tokens, snapshot.AllTime.Work, "All-time includes the same full history");
+        var forkResumeMeta = JsonSerializer.Serialize(new
+        {
+            timestamp = now.AddDays(-2), type = "session_meta",
+            payload = new { id = "resumed", originator = "work_desktop", thread_source = "user", forked_from_id = "source-thread" }
+        });
+        File.WriteAllLines(path, new[] { forkResumeMeta, Event(1000, 100), Event(1500, 50), Event(1500, 50) });
+        var earlierMeta = JsonSerializer.Serialize(new
+        {
+            timestamp = now.AddDays(-45), type = "session_meta",
+            payload = new { id = "resumed", originator = "work_desktop", thread_source = "user", forked_from_id = "source-thread" }
+        });
+        var earlierEvent = Event(2000, 2000, now.AddDays(-35));
+        var fragment = Path.Combine(sessions, "earlier-fragment.jsonl");
+        File.WriteAllLines(fragment, new[] { earlierMeta, earlierEvent });
+        File.SetLastWriteTimeUtc(fragment, now.UtcDateTime.AddDays(-35));
+        snapshot = reader.ReadSnapshot();
+        AssertEqual(3500L, snapshot.CurrentConversation!.Tokens.InputTokens, "Separate rollout segments of the same thread are combined across resets");
+        AssertEqual(now.AddDays(-45), snapshot.CurrentConversation.StartedAt, "Resuming a fork retains its original start time");
+        var copy = Path.Combine(sessions, "fragment-copy.jsonl");
+        File.Copy(fragment, copy);
+        File.SetLastWriteTimeUtc(copy, now.UtcDateTime.AddDays(-36));
+        AssertEqual(3500L, reader.ReadSnapshot().CurrentConversation!.Tokens.InputTokens, "A copied rollout does not count twice");
+        File.SetLastWriteTimeUtc(path, now.UtcDateTime.AddDays(-40));
+        var other = Path.Combine(sessions, "other.jsonl");
+        File.WriteAllText(other, meta.Replace("resumed", "other") + Environment.NewLine);
+        AssertEqual(3500L, reader.ReadSnapshot().AllTime.Work.InputTokens, "Historical cached reader retains all rollout segments");
+    }
+
+    private static void TestPanelMirrorLayout()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var app = new System.Windows.Application();
+                // Preview mode keeps window shutdown from saving test positions
+                // to the user's real settings file.
+                app.Properties["RenderPreviewPath"] = "layout-test";
+                var window = new MainWindow();
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                void Set(string name, object value) => typeof(MainWindow).GetField(name, flags)!.SetValue(window, value);
+                void Call(string name, params object[] args) => typeof(MainWindow).GetMethod(name, flags)!.Invoke(window, args);
+                var settings = (WidgetSettings)typeof(MainWindow).GetField("_settings", flags)!.GetValue(window)!;
+                settings.Scale = 1;
+                settings.PinInfoPanel = false;
+                window.Width = 390;
+                window.Height = 440;
+                window.Top = System.Windows.SystemParameters.WorkArea.Top + 10;
+                window.Left = System.Windows.SystemParameters.WorkArea.Left + 20;
+                var centerBefore = window.Left + 390 - 134;
+                Call("UpdateDragonMirror");
+                var panel = (System.Windows.FrameworkElement)window.FindName("DataPanel");
+                var dragon = (System.Windows.FrameworkElement)window.FindName("DragonHost");
+                AssertEqual(System.Windows.HorizontalAlignment.Right, panel.HorizontalAlignment, "Left-side quota panel belongs on the right");
+                AssertEqual(System.Windows.HorizontalAlignment.Left, dragon.HorizontalAlignment, "Left-side artwork belongs on the left");
+                AssertEqual(centerBefore, window.Left + 134, "Side change preserves character position");
+                Set("_positionInitialized", true);
+                Set("_temporaryInfoPanelVisible", true);
+                Call("ApplyScale", 1d, false);
+                Set("_temporaryInfoPanelVisible", false);
+                Call("ApplyScale", 1d, false);
+                AssertEqual(centerBefore, window.Left + 134, "Hiding the panel preserves character position");
+                Set("_temporaryInfoPanelVisible", true);
+                Call("ApplyScale", 1d, false);
+                AssertEqual(centerBefore, window.Left + 134, "Showing the panel preserves character position");
+                window.Left = System.Windows.SystemParameters.WorkArea.Right - 410;
+                Call("UpdateDragonMirror");
+                AssertEqual(System.Windows.HorizontalAlignment.Left, panel.HorizontalAlignment, "Right-side quota panel belongs on the left");
+                AssertEqual(System.Windows.HorizontalAlignment.Right, dragon.HorizontalAlignment, "Right-side artwork belongs on the right");
+                app.Shutdown();
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        if (failure is not null) throw failure;
+    }
+
+    private static void TestCodexTokenAccounting(string rootDir)
+    {
+        var root = Path.Combine(rootDir, "codex-accounting");
+        var sessions = Path.Combine(root, "sessions");
+        Directory.CreateDirectory(sessions);
+        var now = DateTimeOffset.Now;
+        var meta = JsonSerializer.Serialize(new
+        {
+            timestamp = now.AddDays(-2), type = "session_meta",
+            payload = new { id = "accounting", originator = "codex_desktop", thread_source = "user" }
+        });
+        string Event(DateTimeOffset at, long total, long? last) => JsonSerializer.Serialize(new
+        {
+            timestamp = at, type = "event_msg", payload = new
+            {
+                type = "token_count", info = new
+                {
+                    total_token_usage = new { input_tokens = total, output_tokens = total / 10, cached_input_tokens = total / 2, reasoning_output_tokens = total / 100 },
+                    last_token_usage = last is null ? null : new { input_tokens = last.Value, output_tokens = last.Value / 10, cached_input_tokens = last.Value / 2, reasoning_output_tokens = last.Value / 100 }
+                }
+            }
+        });
+        var oldEvent = Event(now.AddHours(-25), 1000, 1000);
+        var path = Path.Combine(sessions, "new.jsonl");
+        File.WriteAllLines(path, new[] { meta, oldEvent,
+            Event(now.AddHours(-2), 1000, 1000), // quota-only repeat must not enter 24h
+            Event(now.AddHours(-1), 1500, 100), // last is incomplete, delta is 500
+            Event(now.AddMinutes(-30), 1500, 100),
+            Event(now.AddMinutes(-20), 1800, null) }); // cumulative-only update
+        var older = Path.Combine(sessions, "old-copy.jsonl");
+        File.WriteAllLines(older, new[] { meta, oldEvent });
+        File.SetLastWriteTimeUtc(older, now.UtcDateTime.AddHours(-3));
+        var reader = new CodexUsageReader(root);
+        var snapshot = reader.ReadSnapshot();
+        AssertEqual(new UsageTotals(800, 80, 400, 8), snapshot.Last24Hours.Codex, "Only cumulative growth within 24h counts");
+        AssertEqual(new UsageTotals(1800, 180, 900, 18), snapshot.CurrentConversation!.Tokens, "Conversation uses full cumulative total from newest copy");
+        AssertEqual(snapshot.CurrentConversation.Tokens, snapshot.AllTime.Codex, "Total and conversation agree");
+        AssertEqual(snapshot.Last24Hours, reader.ReadSnapshot().Last24Hours, "Refresh is idempotent");
+        File.AppendAllText(path, Event(now.AddMinutes(-10), 200, 200) + Environment.NewLine);
+        AssertEqual(1000L, reader.ReadSnapshot().Last24Hours.Codex.InputTokens, "Counter restart adds new request only");
+        AssertEqual(2000L, reader.ReadSnapshot().CurrentConversation!.Tokens.InputTokens, "Conversation retains usage before counter reset");
+
+        var forkMeta = JsonSerializer.Serialize(new
+        {
+            timestamp = now.AddMinutes(-5), type = "session_meta",
+            payload = new { id = "fork", originator = "codex_desktop", thread_source = "user", forked_from_id = "accounting" }
+        });
+        var fork = Path.Combine(sessions, "fork.jsonl");
+        File.WriteAllLines(fork, new[] { forkMeta, Event(now.AddMinutes(-4), 100000, 100), Event(now.AddMinutes(-3), 100200, 200) });
+        File.SetLastWriteTimeUtc(fork, now.UtcDateTime.AddSeconds(2));
+        snapshot = reader.ReadSnapshot();
+        AssertEqual(300L, snapshot.CurrentConversation!.Tokens.InputTokens, "Fork must exclude inherited cumulative baseline");
+        AssertEqual(1300L, snapshot.Last24Hours.Codex.InputTokens, "Fork adds only new usage to 24h");
+        File.WriteAllLines(fork, new[] { forkMeta, Event(now.AddMinutes(-6), 99000, 99000), Event(now.AddMinutes(-4), 99100, 100) });
+        AssertEqual(100L, reader.ReadSnapshot().CurrentConversation!.Tokens.InputTokens, "Fork replay before creation is not billed again");
+
+        var archived = Path.Combine(root, "archived_sessions");
+        Directory.CreateDirectory(archived);
+        File.Move(path, Path.Combine(archived, "new.jsonl"));
+        snapshot = reader.ReadSnapshot();
+        AssertEqual(1100L, snapshot.Last24Hours.Codex.InputTokens, "Archiving does not remove usage");
+        AssertEqual(2100L, snapshot.AllTime.Codex.InputTokens, "All-time retains counter segments after archive");
+        File.SetLastWriteTimeUtc(fork, now.UtcDateTime.AddDays(-40));
+        File.SetLastWriteTimeUtc(Path.Combine(archived, "new.jsonl"), now.UtcDateTime.AddDays(-40));
+        File.Delete(older);
+        AssertEqual(2100L, reader.ReadSnapshot().AllTime.Codex.InputTokens, "Historical reader uses the same reset accounting");
     }
 
     private static void TestCodexQuotaDiscovery_BeyondNewestEight(string rootDir)

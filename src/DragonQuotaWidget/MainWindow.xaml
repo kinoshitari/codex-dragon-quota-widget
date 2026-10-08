@@ -209,7 +209,7 @@
             <Button x:Name="SourceToggleButton" Style="{StaticResource SourceBadgeButtonStyle}" Content="Codex"
                     HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-7,-7,0" Panel.ZIndex="10"
                     ToolTip="当前显示 Codex；点击切换到 AGY" Click="SourceToggleButton_Click" />
-            <Path Data="M 229,205 C 246,218 252,231 245,244 C 232,229 218,220 202,213 Z" Fill="#F13A2D66" HorizontalAlignment="Left" VerticalAlignment="Top" Panel.ZIndex="-1" />
+            <Path x:Name="QuotaTail" Data="M 229,205 C 246,218 252,231 245,244 C 232,229 218,220 202,213 Z" Fill="#F13A2D66" HorizontalAlignment="Left" VerticalAlignment="Top" Panel.ZIndex="-1" />
         </Grid>
 
         <Grid x:Name="InteractionBubble" Width="170" Height="78" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="4,9,0,0"
