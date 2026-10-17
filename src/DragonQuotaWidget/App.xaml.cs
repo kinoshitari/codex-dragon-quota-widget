@@ -22,6 +22,15 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
+        if (e.Args.Length >= 2 && e.Args[0].Equals("--diagnostics-claude", StringComparison.OrdinalIgnoreCase))
+        {
+            var reader = new ClaudeUsageReader();
+            var json = JsonSerializer.Serialize(new { Usage = reader.ReadSnapshot(), Activity = reader.Poll() }, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(Path.GetFullPath(e.Args[1]), json);
+            Shutdown();
+            return;
+        }
+
         if (e.Args.Length >= 2 && e.Args[0].Equals("--diagnostics", StringComparison.OrdinalIgnoreCase))
         {
             var snapshot = new CodexUsageReader().ReadSnapshot();

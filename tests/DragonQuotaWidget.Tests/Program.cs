@@ -21,6 +21,11 @@ public static class Program
 
         try
         {
+            if (args.Contains("--ui-preview"))
+            {
+                RunTest("UI: Activity, completion and quota layout", TestPanelMirrorLayout);
+                return _failedTests == 0 ? 0 : 1;
+            }
             RunTest("Protobuf: Basic tokens and cached/reasoning semantics", TestProtobufParsing_BasicTokensAndSemantics);
             RunTest("Protobuf: Reasoning clamping and field invariant", TestProtobufParsing_ReasoningClamping);
             RunTest("Protobuf: Non-token events without field 9 skipped", TestProtobufParsing_NonTokenEventSkipped);
@@ -44,8 +49,9 @@ public static class Program
             RunTest("Activity: Public summaries, model, average TPS and task reset", () => TestActivitySummaryAndRate(testDir));
             RunTest("Models: Existing Codex/Work calculation and serialization compatibility", TestUsageModels_CodexCompatibility);
             RunTest("Settings: Legacy QuotaInfo mode maps to Codex quota", TestSettings_LegacyQuotaInfoAlias);
-            RunTest("Doubao: Quota text parses current and seven-day windows", TestDoubaoQuotaParsing);
-            RunTest("Doubao: Source toggle cycles Codex, AGY, and Doubao", TestDoubaoSourceCycle);
+            RunTest("Claude: Quota cache, missing buckets and expiry", TestClaudeQuotaParsing);
+            RunTest("Claude: Source toggle and legacy settings migration", () => TestClaudeSourceCycle(testDir));
+            RunTest("Claude: Transcript usage, progress, model, speed and completion", () => TestClaudeTranscript(testDir));
             RunTest("Settings: Corrupt JSON is backed up before defaults are restored", () => TestSettings_CorruptFileBackup(testDir));
             RunTest("Placement: Dragon faces inward on both halves of the work area", TestPlacement_FacesInward);
 
@@ -735,6 +741,7 @@ public static class Program
                     settings.UsageSource = UsageSource.Codex;
                     settings.ShowCodexActivityBubble = true;
                     Set("_codexIsWorking", true);
+                    Set("_activitySource", UsageSource.Codex);
                     Set("_latestActivityModel", "6.1sol max · 均 50 t/s");
                     Call("UpdateActivityDetails");
                     AssertEqual("6.1sol max · 均 50 t/s", ((System.Windows.Controls.TextBlock)window.FindName("ActivityModelText")).Text, "Model/TPS belongs to the quota panel");
@@ -757,6 +764,8 @@ public static class Program
                     Set("_temporaryInfoPanelVisible", false);
                     Call("ApplyScale", 1d, false);
                     Call("ShowActivityBubble", "正在核对会话历史与累计 Token，并调整额度提示框中的模型名称和速度显示。");
+                    Set("_latestWorkDetail", "已运行命令 · exec_command");
+                    Call("ShowActivityBubble", "正在核对会话历史与累计 Token，并调整额度提示框中的模型名称和速度显示。");
                     var bubble = (System.Windows.FrameworkElement)window.FindName("InteractionBubble");
                     bubble.BeginAnimation(System.Windows.UIElement.OpacityProperty, null);
                     bubble.Opacity = 1;
@@ -764,7 +773,29 @@ public static class Program
                     transform.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, null);
                     transform.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, null);
                     transform.ScaleX = transform.ScaleY = 1;
-                    Capture("summary.png", 268, 300);
+                    Assert(window.Width >= 480, "Activity bubble reserves space beside the dragon");
+                    Capture("summary-right.png", window.Width, window.Height);
+                    window.Left = System.Windows.SystemParameters.WorkArea.Left + 20;
+                    Call("UpdateDragonMirror");
+                    AssertEqual(System.Windows.HorizontalAlignment.Right, bubble.HorizontalAlignment, "Left-side dragon puts the bubble on its right");
+                    Capture("summary-left.png", window.Width, window.Height);
+                    var leftAnchor = window.Left + 134;
+                    Call("HideInteractionBubble", true, false);
+                    AssertEqual(leftAnchor, window.Left + 134, "Closing the side bubble retains the left-side dragon anchor");
+                    settings.PinInfoPanel = true;
+                    Set("_pendingCompletion", "已完成，覆盖更新到 0.4.0，挂件已重启。中文进度下方显示工作提示；Claude 的模型与平均速度已接入额度框。");
+                    Call("ShowCompletionIfNeeded");
+                    AssertEqual(System.Windows.Visibility.Collapsed, panel.Visibility, "Pinned quota panel yields to completion");
+                    var hint = (System.Windows.Controls.TextBlock)window.FindName("WorkHintText");
+                    AssertEqual("✓ 任务完成", hint.Text, "Completion shows a separate footer");
+                    bubble.BeginAnimation(System.Windows.UIElement.OpacityProperty, null);
+                    bubble.Opacity = 1;
+                    transform.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, null);
+                    transform.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, null);
+                    transform.ScaleX = transform.ScaleY = 1;
+                    Capture("completion.png", window.Width, window.Height);
+                    Call("HideInteractionBubble", true, false);
+                    AssertEqual(System.Windows.Visibility.Visible, panel.Visibility, "Pinned panel is restored after completion");
                 }
                 app.Shutdown();
             }
@@ -918,14 +949,24 @@ public static class Program
         snapshot = monitor.Poll();
         AssertEqual(50d, snapshot.TokensPerSecond, "Repeated usage is not counted again");
         Assert(snapshot.StatusText.StartsWith("正在核对"), "Tool status does not erase the summary");
+        File.AppendAllLines(path, new[] {
+            Record(21, "event_msg", new { type = "agent_message", phase = "commentary", message = "已经找到字段，正在接入新的状态显示。" }),
+            Record(21, "response_item", new { type = "reasoning", summary = new[] { new { type = "summary_text", text = "**Considering internal options**" } } }),
+            Record(21, "response_item", new { type = "function_call", name = "exec_command", call_id = "cmd1", arguments = "secret argument" }),
+            Record(21, "response_item", new { type = "function_call_output", call_id = "cmd1", output = "private output" }) });
+        snapshot = monitor.Poll();
+        AssertEqual("已经找到字段，正在接入新的状态显示。", snapshot.StatusText, "English reasoning must not replace Chinese progress");
+        AssertEqual("已运行命令 · exec_command", snapshot.WorkDetail, "Work hint is separate and does not echo arguments");
         File.AppendAllLines(path, new[] { CreateActivityEvent(start.AddSeconds(22), "task_complete"), CreateActivityEvent(start.AddSeconds(30), "task_started"), Record(31, "response_item", new { type = "reasoning", summary = Array.Empty<object>(), content = "never show raw reasoning" }) });
         snapshot = monitor.Poll();
         AssertEqual("开始处理任务…", snapshot.StatusText, "New task clears old summary; raw content is ignored");
         Assert(snapshot.TokensPerSecond is null, "New task clears old rate");
         File.AppendAllText(path, Tokens(40, 10700, 200) + Environment.NewLine);
         AssertEqual(20d, monitor.Poll().TokensPerSecond, "New task uses only its own output");
-        File.AppendAllText(path, CreateActivityEvent(start.AddSeconds(41), "task_complete") + Environment.NewLine);
-        Assert(monitor.Poll().Model is null, "Idle display does not retain an active model");
+        File.AppendAllLines(path, new[] { Record(41, "event_msg", new { type = "agent_message", phase = "final", message = "已完成，挂件已更新。\n- 中文摘要和工作提示已经分开。" }), CreateActivityEvent(start.AddSeconds(42), "task_complete") });
+        snapshot = monitor.Poll();
+        Assert(snapshot.Model is null, "Idle display does not retain an active model");
+        Assert(snapshot.CompletionText!.StartsWith("已完成，挂件已更新。"), "Completion retains the final public answer");
     }
 
     private static void TestActivityMonitor_ParallelSessions(string rootDir)
@@ -1000,41 +1041,69 @@ public static class Program
         Assert(!settings.PinInfoPanel, "Fresh installs keep the quota panel unpinned");
     }
 
-    private static void TestDoubaoQuotaParsing()
+    private static void TestClaudeQuotaParsing()
     {
-        var now = new DateTimeOffset(2026, 9, 1, 8, 30, 0, TimeSpan.FromHours(8));
-        var snapshot = DoubaoUsageReader.ParseQuotaTexts(
-        [
-            "赠送时长至10月1日",
-            "当前时段",
-            "已用 1%",
-            "4 小时 48 分钟后重置",
-            "近 7 天",
-            "已用 <1%",
-            "9月8日 08:28 重置"
-        ], now);
-
-        var current = snapshot.RateLimits?.Primary;
-        var sevenDays = snapshot.RateLimits?.Secondary;
-        Assert(current is not null, "Current-period quota must be parsed");
-        Assert(sevenDays is not null, "Seven-day quota must be parsed");
-        AssertEqual(300, current!.WindowMinutes, "Current period maps to the existing 5h card");
-        AssertEqual(1d, current.UsedPercent, "Current period used percent");
-        AssertEqual("1%", current.UsedPercentText, "Exact current period percent text");
-        AssertEqual(now.AddHours(4).AddMinutes(48), current.ResetsAt, "Relative reset time");
-        AssertEqual(10080, sevenDays!.WindowMinutes, "Near seven days maps to the weekly card");
-        AssertEqual(0.5d, sevenDays.UsedPercent, "Less-than one percent gets a bounded progress value");
-        AssertEqual("<1%", sevenDays.UsedPercentText, "Less-than display text is preserved");
-        AssertEqual(new DateTimeOffset(2026, 9, 8, 8, 28, 0, TimeSpan.FromHours(8)), sevenDays.ResetsAt, "Absolute reset time");
-        AssertEqual("赠送时长至10月1日", snapshot.Warning, "Entitlement note is retained");
+        var now = DateTimeOffset.Now;
+        JsonElement Cache(object usage, DateTimeOffset at) => JsonSerializer.SerializeToElement(new { version = 2, samples = new[] { new { t = at.ToUnixTimeMilliseconds(), org = "fixture", u = usage } } });
+        var (limits, _) = ClaudeUsageReader.ParseQuotaHistory(Cache(new { fh = 100, sd = 28 }, now), now);
+        AssertEqual(100d, limits!.Primary!.UsedPercent, "Exhausted five-hour quota is preserved");
+        AssertEqual(28d, limits.Secondary!.UsedPercent, "Weekly utilization is a percentage");
+        Assert(limits.Primary.ResetsAt is null, "Reset times are not guessed from history");
+        (limits, _) = ClaudeUsageReader.ParseQuotaHistory(Cache(new { fh = 0 }, now), now);
+        AssertEqual(0d, limits!.Primary!.UsedPercent, "A real zero remains available data");
+        Assert(limits.Secondary is null, "Missing weekly quota is unknown, not exhausted");
+        (limits, _) = ClaudeUsageReader.ParseQuotaHistory(Cache(new { fh = 10 }, now.AddMinutes(-10)), now);
+        Assert(limits!.IsStale, "Old cache is marked");
+        (limits, _) = ClaudeUsageReader.ParseQuotaHistory(Cache(new { fh = 10 }, now.AddMinutes(-31)), now);
+        Assert(limits is null, "Expired quota is not shown");
+        (limits, var warning) = ClaudeUsageReader.ParseQuotaHistory(Cache(new { }, now), now);
+        Assert(limits is null && warning!.Contains("未提供"), "An empty Free account response is explicitly unavailable");
     }
 
-    private static void TestDoubaoSourceCycle()
+    private static void TestClaudeSourceCycle(string rootDir)
     {
         AssertEqual(UsageSource.Agy, MainWindow.NextUsageSource(UsageSource.Codex), "Codex toggles to AGY");
-        AssertEqual(UsageSource.Doubao, MainWindow.NextUsageSource(UsageSource.Agy), "AGY toggles to Doubao");
-        AssertEqual(UsageSource.Codex, MainWindow.NextUsageSource(UsageSource.Doubao), "Doubao toggles to Codex");
-        AssertEqual(LeftClickDisplayMode.DoubaoQuota, Enum.Parse<LeftClickDisplayMode>("DoubaoQuota"), "Settings enum includes Doubao quota");
+        AssertEqual(UsageSource.Claude, MainWindow.NextUsageSource(UsageSource.Agy), "AGY toggles to Claude");
+        AssertEqual(UsageSource.Codex, MainWindow.NextUsageSource(UsageSource.Claude), "Claude toggles to Codex");
+        var path = Path.Combine(rootDir, "legacy-source.json");
+        File.WriteAllText(path, """{"UsageSource":"Doubao","LeftClickMode":"DoubaoQuota","SettingsSchemaVersion":5,"Scale":1.2}""");
+        var migrated = WidgetSettings.Load(path);
+        AssertEqual(UsageSource.Claude, migrated.UsageSource, "Old source migrates without resetting settings");
+        AssertEqual(LeftClickDisplayMode.ClaudeQuota, migrated.LeftClickMode, "Old click mode migrates");
+        AssertEqual(1.2, migrated.Scale, "Unrelated settings survive migration");
+    }
+
+    private static void TestClaudeTranscript(string rootDir)
+    {
+        var root = Path.Combine(rootDir, "claude");
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "session.jsonl");
+        var now = DateTimeOffset.Now;
+        string Row(int seconds, string type, object message) => JsonSerializer.Serialize(new { type, timestamp = now.AddSeconds(seconds), sessionId = "test-session", uuid = Guid.NewGuid().ToString(), effort = "max", message });
+        var tool = new { type = "tool_use", id = "tool1", name = "Bash", input = new { command = "must not display" } };
+        object Message(object[] content, string stop, int output) => new { id = "msg1", model = "claude-opus-5-5", content, stop_reason = stop, usage = new { input_tokens = 100, cache_creation_input_tokens = 200, cache_read_input_tokens = 300, output_tokens = output } };
+        File.WriteAllLines(path, new[] {
+            Row(-20, "user", new { role = "user", content = "private prompt" }),
+            Row(-10, "assistant", Message(new object[] { new { type = "thinking", thinking = "raw reasoning must never show" }, new { type = "text", text = "正在核对项目文件，随后更新界面。" }, tool }, "tool_use", 500)),
+            Row(-10, "assistant", Message(new object[] { tool }, "tool_use", 500))
+        });
+        var reader = new ClaudeUsageReader(root, Path.Combine(root, "missing-quota.json"), () => now);
+        var usage = reader.ReadSnapshot();
+        AssertEqual(new UsageTotals(600, 500, 300, 0), usage.CurrentConversation!.Tokens, "Message blocks do not duplicate usage; cached input is included once");
+        var activity = reader.Poll();
+        AssertEqual("claude-opus-5-5", activity.Model, "Actual Claude model is shown");
+        AssertEqual(50d, activity.TokensPerSecond, "Task average speed uses output counts");
+        AssertEqual("正在核对项目文件，随后更新界面。", activity.StatusText, "Public Chinese progress is shown");
+        Assert(activity.WorkDetail!.Contains("运行命令"), "Tool status is separate");
+        File.AppendAllLines(path, new[] {
+            Row(-5, "user", new { role = "user", content = new[] { new { type = "tool_result", tool_use_id = "tool1", content = "private result" } } }),
+            Row(-1, "assistant", new { id = "msg2", model = "claude-opus-5-5", stop_reason = "end_turn", content = new[] { new { type = "text", text = "已完成更新，检查通过。" } }, usage = new { input_tokens = 50, output_tokens = 100, cache_read_input_tokens = 30, cache_creation_input_tokens = 20 } })
+        });
+        var completed = reader.Poll();
+        Assert(!completed.IsWorking && completed.CompletionRevision > activity.CompletionRevision, "End-turn ends the task");
+        AssertEqual("已完成更新，检查通过。", completed.CompletionText, "Final text is retained");
+        AssertEqual(600L, reader.ReadSnapshot().Today.Claude.OutputTokens, "Output totals include both distinct messages");
+        AssertEqual(completed.CompletionRevision, reader.Poll().CompletionRevision, "Completion is not repeated on polling");
     }
 
     private static void TestSettings_CorruptFileBackup(string rootDir)

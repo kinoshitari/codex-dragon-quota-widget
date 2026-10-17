@@ -24,6 +24,9 @@ public sealed class CodexActivityMonitor
     private string? _model;
     private string? _effort;
     private double? _tokensPerSecond;
+    private string? _workDetail;
+    private string? _completionText;
+    private DateTimeOffset? _completedAt;
 
     public CodexActivityMonitor(string? codexRootOverride = null)
     {
@@ -98,7 +101,8 @@ public sealed class CodexActivityMonitor
         var nextStatus = active?.Summary ?? active?.Status ?? "Codex 空闲中";
         var nextEventAt = active?.EventAt ?? _tracked.Values.Select(session => session.EventAt).DefaultIfEmpty(_eventAt).Max();
         if (_working != nextWorking || !string.Equals(_status, nextStatus, StringComparison.Ordinal) ||
-            _model != active?.Model || _effort != active?.Effort || _tokensPerSecond != active?.TokensPerSecond)
+            _model != active?.Model || _effort != active?.Effort || _tokensPerSecond != active?.TokensPerSecond ||
+            _workDetail != active?.WorkDetail)
         {
             _working = nextWorking;
             _status = nextStatus;
@@ -106,6 +110,7 @@ public sealed class CodexActivityMonitor
             _model = active?.Model;
             _effort = active?.Effort;
             _tokensPerSecond = active?.TokensPerSecond;
+            _workDetail = active?.WorkDetail;
             _revision++;
         }
 
@@ -217,6 +222,9 @@ public sealed class CodexActivityMonitor
                 session.OutputTokens = 0;
                 session.TokensPerSecond = null;
                 session.Summary = null;
+                session.FinalText = null;
+                session.WorkDetail = "正在准备任务";
+                session.Tools.Clear();
                 SetStatus(session, true, "开始处理任务…", eventAt);
                 break;
             case "token_count":
@@ -234,15 +242,18 @@ public sealed class CodexActivityMonitor
             case "agent_message":
                 if (ReadString(payload, "phase") == "commentary")
                 {
-                    var message = SanitizeVisibleMessage(ReadString(payload, "message"));
+                    var message = ActivityPresentation.Chinese(ReadString(payload, "message"));
                     if (!string.IsNullOrWhiteSpace(message))
                     {
                         session.Summary = message;
                         SetStatus(session, true, message, eventAt);
                     }
                 }
+                else if (ReadString(payload, "phase") == "final")
+                    session.FinalText = ActivityPresentation.Chinese(ReadString(payload, "message"), 160);
                 break;
             case "task_complete":
+                session.FinalText = ActivityPresentation.Chinese(ReadString(payload, "last_agent_message"), 160) ?? session.FinalText;
                 SetStatus(session, false, "任务完成啦", eventAt, completed: true);
                 break;
             case "turn_aborted":
@@ -256,7 +267,7 @@ public sealed class CodexActivityMonitor
         var type = ReadString(item, "type");
         if (type == "reasoning" && item.TryGetProperty("summary", out var summary) && summary.ValueKind == JsonValueKind.Array)
         {
-            var text = SanitizeVisibleMessage(string.Join(" ", summary.EnumerateArray()
+            var text = ActivityPresentation.Chinese(string.Join(" ", summary.EnumerateArray()
                 .Where(part => ReadString(part, "type") == "summary_text")
                 .Select(part => ReadString(part, "text"))));
             if (text is not null)
@@ -266,8 +277,32 @@ public sealed class CodexActivityMonitor
             }
             return;
         }
+        if (type == "message" && ReadString(item, "role") == "assistant" &&
+            item.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+        {
+            var text = string.Join(" ", content.EnumerateArray().Where(x => ReadString(x, "type") is "output_text" or "text").Select(x => ReadString(x, "text")));
+            if (ReadString(item, "phase") == "final") session.FinalText = ActivityPresentation.Chinese(text, 160);
+            else if (ReadString(item, "phase") == "commentary" && ActivityPresentation.Chinese(text) is { } progress)
+            {
+                session.Summary = progress;
+                SetStatus(session, true, progress, eventAt);
+            }
+            return;
+        }
+        if (type is "custom_tool_call_output" or "function_call_output")
+        {
+            var callId = ReadString(item, "call_id");
+            if (callId is not null && session.Tools.Remove(callId, out var tool))
+            {
+                session.WorkDetail = ActivityPresentation.Tool(tool, completed: true);
+                session.EventAt = eventAt;
+            }
+            return;
+        }
         if (type is not ("custom_tool_call" or "function_call")) return;
         var name = ReadString(item, "name") ?? string.Empty;
+        if (ReadString(item, "call_id") is { } id) session.Tools[id] = name;
+        session.WorkDetail = ActivityPresentation.Tool(name);
         var status = name switch
         {
             var value when value.Contains("apply_patch", StringComparison.OrdinalIgnoreCase) => "正在修改文件…",
@@ -306,15 +341,15 @@ public sealed class CodexActivityMonitor
         session.Status = status;
         session.EventAt = eventAt;
 
-        if (completed) _completionRevision++;
-    }
-
-    private static string? SanitizeVisibleMessage(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        var singleLine = string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        if (singleLine.Length > 64) singleLine = singleLine[..63] + "…";
-        return singleLine;
+        if (completed)
+        {
+            _completionRevision++;
+            if (_completedAt is null || eventAt >= _completedAt)
+            {
+                _completionText = session.FinalText ?? (status == "任务已停止" ? status : "任务已完成");
+                _completedAt = eventAt;
+            }
+        }
     }
 
     private CodexActivitySnapshot Snapshot() => new(
@@ -322,7 +357,8 @@ public sealed class CodexActivityMonitor
         _status,
         _revision,
         _completionRevision,
-        _eventAt) { Model = _model, Effort = _effort, TokensPerSecond = _tokensPerSecond };
+        _eventAt) { Model = _model, Effort = _effort, TokensPerSecond = _tokensPerSecond,
+            WorkDetail = _workDetail, CompletionText = _completionText, CompletedAt = _completedAt };
 
     private static string? ReadString(JsonElement element, string name) =>
         element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
@@ -352,6 +388,9 @@ public sealed class CodexActivityMonitor
         public long? PreviousOutput { get; set; }
         public long OutputTokens { get; set; }
         public double? TokensPerSecond { get; set; }
+        public string? WorkDetail { get; set; }
+        public string? FinalText { get; set; }
+        public Dictionary<string, string> Tools { get; } = new();
     }
 }
 
@@ -365,13 +404,17 @@ public sealed record CodexActivitySnapshot(
     public string? Model { get; init; }
     public string? Effort { get; init; }
     public double? TokensPerSecond { get; init; }
+    public string? WorkDetail { get; init; }
+    public string? CompletionText { get; init; }
+    public DateTimeOffset? CompletedAt { get; init; }
     public string ModelSpeedText
     {
         get
         {
             var model = Model ?? "模型未知";
             if (model.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase)) model = model[4..];
-            model = model.Replace("-", "");
+            if (model.StartsWith("claude-", StringComparison.OrdinalIgnoreCase)) model = model[7..].Replace('-', ' ');
+            else model = model.Replace("-", "");
             var effort = string.IsNullOrWhiteSpace(Effort) ? "" : $" {Effort}";
             var speed = TokensPerSecond is { } rate ? $"均 {rate:0.#} t/s" : "-- t/s";
             return $"{model}{effort} · {speed}";

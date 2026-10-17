@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Codex', 'Agy')]
+    [ValidateSet('Codex', 'Agy', 'Claude')]
     [string]$Source = 'Codex'
 )
 
@@ -11,7 +11,7 @@ if (-not (Test-Path -LiteralPath $executable)) {
 }
 
 $outputPath = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dragon-usage-{0}.json" -f [guid]::NewGuid().ToString('N'))
-$diagArg = if ($Source -eq 'Agy') { '--diagnostics-agy' } else { '--diagnostics' }
+$diagArg = if ($Source -eq 'Agy') { '--diagnostics-agy' } elseif ($Source -eq 'Claude') { '--diagnostics-claude' } else { '--diagnostics' }
 try {
     Start-Process -FilePath $executable -ArgumentList @($diagArg, $outputPath) -WindowStyle Hidden -Wait
     Get-Content -LiteralPath $outputPath -Raw

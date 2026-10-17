@@ -1,15 +1,15 @@
 # 傻龙插件：当前版本摘要
 
 > 更新日期：2026-10-17
-> 当前清单版本：`0.3.3+codex.20261017`
-> 本次发布前基线提交：`603d903df8ce991c4fa0c335f6ceb7041fee80be`
+> 当前清单版本：`0.4.0+codex.20261017`
+> 本次更新基线提交：`ce1f39eb239516849f5ef0af1ba29617533d0fcb`
 > 运行平台：Windows 10/11、.NET 8 Windows Desktop Runtime
 
 ## 1. 项目定位
 
-本次更新：工作气泡显示客户端提供的思考摘要和公开进度；Codex 额度提示框底部显示活动任务的模型、推理强度和平均输出 TPS。均速按任务新增输出 Token / 经过秒数计算，包含工具等待，随 Token 记录更新，未取得计数时显示 `-- t/s`。保留整条对话历史累计与左右镜像布局。
+本次更新：工作气泡选取中文摘要和公开进度，下方单独显示工具状态；结束时显示最后公开答复的中文摘录。豆包入口替换为 Claude，支持本地 Claude Code Token、中文进度、完成答复、模型和平均 TPS，并读取 Claude 桌面客户端的额度缓存。
 
-傻龙插件是一个透明、置顶、可自由拖动的 Codex/AGY 桌面伴生挂件。它以龙娘立绘为主体，在不修改 Codex 或 AGY 客户端安装目录的前提下，展示账户额度、本地 Token 消耗和可观察的任务状态。
+傻龙插件是一个透明、置顶、可自由拖动的 Codex/AGY/Claude 桌面伴生挂件。它以龙娘立绘为主体，展示账户额度、本地 Token 消耗和可观察的任务状态。
 
 插件不会读取 `auth.json`、复制登录凭据或调用私有登录接口，也不会展示隐藏推理、用户提示词或工具参数。
 
@@ -17,8 +17,8 @@
 
 ### 额度与 Token
 
-- 支持 Codex 与 AGY 两套数据源，可通过右键菜单切换左键行为。
-- 左键模式包括“Codex 额度”“AGY 额度”和“互动提示”。
+- 支持 Codex、AGY、Claude 三套数据源，可通过右键菜单切换左键行为。旧豆包设置迁移至 Claude。
+- 左键模式包括“Codex 额度”“AGY 额度”“Claude 额度”和“互动提示”。
 - 额度模式下左键刷新并临时显示额度信息；默认每 60 秒自动刷新一次。
 - 信息页签顺序固定为：
 
@@ -30,14 +30,16 @@
 
 - Token 明细包含输入、输出和缓存命中率；总量按 `输入 + 输出` 计算，缓存输入是输入 Token 的子集，不重复计入总量。
 - Codex 数据中分别统计 Work 与普通 Codex 会话；AGY 使用独立统计，不与 Codex/Work 混合。
-- 每周和 5h 额度均显示剩余百分比、重置剩余倒计时和重置时间。
+- 每周和 5h 额度显示剩余百分比，有重置时间时显示倒计时。Claude 客户端缓存不提供重置时间，显示 `--`。
 
 ### 信息框与工作状态
 
-- 额度信息框平时隐藏，在额度模式左键点击、任务完成或通过右键命令显示时弹出。
+- 额度信息框平时隐藏，在额度模式左键点击或通过右键命令显示时弹出。
 - 信息框按设置的持续时间自动淡出；角标或菜单可以将其固定，固定后不自动淡出。
 - 信息框出现时，可观察工作状态气泡会暂时收回；信息框消失且任务仍在进行时，状态气泡恢复。
-- 工作状态气泡优先显示 `summary_text` 思考摘要和公开工作进度，无摘要时显示“正在思考”“正在运行命令”等状态。
+- 工作状态气泡选取中文 `summary_text` 或公开工作进度，下方独立显示工具工作提示；英文思考片段不会覆盖中文进度。任务完成显示最后公开答复的中文摘录（最多 160 字），按信息框持续时间收回。固定额度框临时让位后恢复；关闭工作气泡时沿用完成弹出额度框的行为。
+- 气泡朝屏幕内侧摆放，仅与角色外侧轻微重叠；左右对称，并在出现和收回时保留立绘位置。
+- Codex / Claude 模型、推理强度和平均 TPS 位于各自额度框内；平均 TPS = 任务新增输出 Token / 经过秒数（含工具等待）。
 - 工作状态增量跟踪最多 32 个最近活动会话，并行任务完成不会再被单一最新日志遮蔽。
 
 ### 龙娘互动
@@ -65,6 +67,8 @@
 | Codex Token | 本机 `.codex/sessions` 会话 JSONL | 按事件时间聚合，并依据会话元数据区分 Work、Codex 和子任务归属 |
 | AGY 每周/5h 额度 | 本机已登录 AGY 的官方 `/usage` 命令 | 读取命令返回的实际额度窗口；没有快照时不臆测数值 |
 | AGY Token | 本机 AGY 会话 SQLite 数据库中的轨迹元数据 | 使用 AGY 专属 surface 聚合，与 Codex/Work 隔离 |
+| Claude 额度 | `%APPDATA%\Claude\plan-usage-history.json` v2 | 最新样本 `u.fh` / `u.sd`；缺失不推算，5 分钟后标为旧缓存、30 分钟后失效 |
+| Claude Token / 活动 | `%USERPROFILE%\.claude\projects` JSONL | 按消息 ID 去重；输入包含普通输入、缓存创建与缓存读取；公开中文文本和工具事件形成状态气泡 |
 | 本轮对话 | 最近活动的顶层会话及可追溯子任务，或 AGY 最新轨迹 | 仅覆盖本机仍可读取的会话事件 |
 
 时间范围定义：
@@ -93,12 +97,13 @@
 - 右键刷新 Codex 数据只重新读取本地事件，不会主动向 OpenAI 发起一次额度查询。
 - AGY 额度查询可能联网，并依赖本机 AGY 登录状态和 `/usage` 命令可用性。
 - AGY 刷新失败时，最多使用 5 分钟且明确标记为旧缓存的额度；超过期限后显示无可用额度，不再无限沿用旧值。
+- 本机 Claude Free 账号未提供额度百分比，因此无法验证非空的真实额度显示；缓存字段已通过客户端代码核对并用固定样本验证。普通云端 Claude 对话未写入 Claude Code 本地目录时，不提供其 Token / TPS。
 - 可观察状态气泡不是模型的隐藏思考链；它只呈现客户端已公开写入本地会话的状态。
 - 角色图片不随 MIT 代码许可证再授权；音效来源和许可证另见项目中的声明文件。
 
 ## 6. 设置项概览
 
-- 左键展示模式：Codex 额度、AGY 额度、互动提示
+- 左键展示模式：Codex 额度、AGY 额度、Claude 额度、互动提示
 - Token 时间范围：当日、过去 24 小时
 - 长期统计范围：过去 7 天、过去 30 天、全部
 - 信息框：显示时长、固定显示
@@ -130,6 +135,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-widget.ps1
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/get-usage.ps1 -Source Codex
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/get-usage.ps1 -Source Agy
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/get-usage.ps1 -Source Claude
 ```
 
 ## 8. 主要代码位置
@@ -138,6 +144,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/get-usage.ps1 -Sourc
 - 交互、刷新与状态气泡：[MainWindow.xaml.cs](src/DragonQuotaWidget/MainWindow.xaml.cs)
 - Codex 数据读取：[CodexUsageReader.cs](src/DragonQuotaWidget/CodexUsageReader.cs)
 - AGY 数据读取：[AntigravityUsageReader.cs](src/DragonQuotaWidget/AntigravityUsageReader.cs)
+- Claude 数据与活动：[ClaudeUsageReader.cs](src/DragonQuotaWidget/ClaudeUsageReader.cs)
 - 设置模型与迁移：[WidgetSettings.cs](src/DragonQuotaWidget/WidgetSettings.cs)
 - 启动脚本：[start-widget.ps1](scripts/start-widget.ps1)
 - 测试入口：[Program.cs](tests/DragonQuotaWidget.Tests/Program.cs)
@@ -145,6 +152,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/get-usage.ps1 -Sourc
 ## 9. 当前修订与验收状态
 
 - `0.3.1` 修复 AGY 额度陈旧缓存、数据库回退、Codex 全会话额度发现、历史摘要缓存、并行任务监测、关闭行为、设置损坏备份和安装失败回滚。
-- 自动化测试已扩展为 21 项，覆盖上述数据层和状态监测回归场景。
+- 自动化测试共 28 项，覆盖额度缓存、Claude 消息去重、中文进度、完成答复、模型速度及原有统计与镜像行为；实际界面预览已检查。
 - 安装包采用 Windows IExpress 封装，当前未进行代码签名；首次下载或运行时可能出现 Windows SmartScreen 提示。
-- 当前修订尚未覆盖安装、启动或 GitHub 发布；需要发布时应重新生成安装包与 SHA-256。
+- Git 源码更新与 GitHub Release 附件是独立交付；旧 Release 不会自动包含本次更新。

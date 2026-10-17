@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace DragonQuotaWidget;
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum UsageSurface { Codex, Work, Agy }
+public enum UsageSurface { Codex, Work, Agy, Claude }
 
 public sealed record UsageSnapshot(
     UsageBySurface Today,
@@ -33,6 +33,7 @@ public sealed record UsageBySurface
     public UsageTotals Codex { get; init; }
     public UsageTotals Work { get; init; }
     public UsageTotals Agy { get; init; }
+    public UsageTotals Claude { get; init; } = UsageTotals.Empty;
 
     public UsageBySurface(UsageTotals codex, UsageTotals work) : this(codex, work, UsageTotals.Empty)
     {
@@ -47,7 +48,7 @@ public sealed record UsageBySurface
     }
 
     public static UsageBySurface Empty { get; } = new(UsageTotals.Empty, UsageTotals.Empty, UsageTotals.Empty);
-    public UsageTotals Total => Codex + Work + Agy;
+    public UsageTotals Total => Codex + Work + Agy + Claude;
 }
 
 public sealed record UsageTotals(long InputTokens, long OutputTokens, long CachedInputTokens, long ReasoningOutputTokens)

@@ -112,7 +112,7 @@
                 <MenuItem Header="左键模式 / 数据源">
                     <MenuItem x:Name="CodexQuotaModeMenuItem" Header="Codex 额度" IsCheckable="True" Click="CodexQuotaModeMenuItem_Click" />
                     <MenuItem x:Name="AgyQuotaModeMenuItem" Header="AGY 额度" IsCheckable="True" Click="AgyQuotaModeMenuItem_Click" />
-                    <MenuItem x:Name="DoubaoQuotaModeMenuItem" Header="豆包额度" IsCheckable="True" Click="DoubaoQuotaModeMenuItem_Click" />
+                    <MenuItem x:Name="ClaudeQuotaModeMenuItem" Header="Claude 额度" IsCheckable="True" Click="ClaudeQuotaModeMenuItem_Click" />
                     <MenuItem x:Name="InteractionDisplayModeMenuItem" Header="互动提示" IsCheckable="True" Click="InteractionDisplayModeMenuItem_Click" />
                 </MenuItem>
                 <MenuItem Header="显示额度信息" Click="ShowInfoMenuItem_Click" />
@@ -225,8 +225,11 @@
                 <Border.Effect>
                     <DropShadowEffect Color="#55251D4C" BlurRadius="12" ShadowDepth="3" Opacity="0.5" />
                 </Border.Effect>
-                <TextBlock x:Name="InteractionBubbleText" Text="好模型" Foreground="#FF342651" FontSize="15" FontWeight="SemiBold"
-                           TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock x:Name="InteractionBubbleText" Text="好模型" Foreground="#FF342651" FontSize="15" FontWeight="SemiBold"
+                               TextWrapping="Wrap" TextAlignment="Left" HorizontalAlignment="Center" />
+                    <TextBlock x:Name="WorkHintText" Visibility="Collapsed" Foreground="#FF71619B" FontSize="11.5" Margin="0,10,0,0" TextWrapping="Wrap" />
+                </StackPanel>
             </Border>
             <Path x:Name="BubbleTail" Data="M 0,0 L 18,0 L 11,14 Z" Fill="#F9FFFFFF" Stroke="#FF6D5FA9" StrokeThickness="2" StrokeLineJoin="Round"
                   Width="20" Height="16" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,32,0" />

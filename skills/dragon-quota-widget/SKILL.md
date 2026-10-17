@@ -1,11 +1,11 @@
 ---
 name: dragon-quota-widget
-description: Launch, stop, or inspect the local Codex and AGY companion named 傻龙插件. Use when the user asks to start or close the widget, view Codex or AGY quota, or inspect Work/Codex/AGY token usage for today, the last 24 hours, the last 7 days, the last 30 days, all local history, or the current conversation.
+description: Launch, stop, or inspect the local Codex, AGY and Claude companion named 傻龙插件. Use for quota, local token usage, Chinese progress, completion summaries and model speed.
 ---
 
 # 傻龙插件
 
-This plugin controls a local Windows companion widget for Codex and AGY. It does not modify client applications or read authentication files. Its activity bubble shows provider-supplied `summary_text` reasoning summaries and public progress, falling back to lifecycle status labels. Raw reasoning, encrypted content, prompts and tool inputs are not displayed. The Codex quota panel shows the active model, reasoning effort and average output tokens per elapsed task second (including tool waiting), updated with token records; unavailable speed is `-- t/s`.
+This plugin controls a local Windows companion widget for Codex, AGY and Claude. Its activity bubble selects Chinese public summaries/progress, shows a separate tool-status line, and displays the final public completion excerpt. Raw reasoning, encrypted content, prompts and tool arguments are not displayed. Codex and Claude quota panels show the selected source's active model, effort and average output tokens per elapsed task second (including tool waiting); unavailable speed is `-- t/s`.
 
 ## Start the widget
 
@@ -30,7 +30,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<plugin-root>\scripts\stop-
 Run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "<plugin-root>\scripts\get-usage.ps1" -Source <Codex|Agy>
+powershell -NoProfile -ExecutionPolicy Bypass -File "<plugin-root>\scripts\get-usage.ps1" -Source <Codex|Agy|Claude>
 ```
 
 When reporting values, preserve these definitions:
@@ -42,6 +42,8 @@ When reporting values, preserve these definitions:
 - All-time usage includes every local session log / conversation database that still exists.
 - Work and Codex token usage are calculated separately from session metadata, then combined only for the displayed Codex total.
 - AGY token usage is aggregated under its own surface directly from local AGY conversation databases.
+- Claude usage is isolated under `Claude`, from local `.claude/projects` JSONL. Message IDs deduplicate blocks. Input includes plain input plus cache creation and cache reads. Raw thinking blocks are ignored; public assistant text drives the Chinese progress and completion display. Ordinary cloud Claude chats without local transcripts are not included.
+- Claude quota is read from the desktop app's credential-free `plan-usage-history.json` v2 cache (`u.fh` and `u.sd`). Missing data is unavailable; the app may not provide quota for Free/API accounts. No reset time is inferred. Values older than 5 minutes are stale and older than 30 minutes expire. `-Source Claude` returns an object with `Usage` and `Activity`.
 - Current conversation includes the most recently active top-level user session and child sessions with a traceable parent thread id for Codex, or the latest conversation trajectory for AGY.
 - Total tokens are input plus output.
 - Cached input is a subset of input and is not added to total tokens again.

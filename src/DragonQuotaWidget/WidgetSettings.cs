@@ -12,7 +12,7 @@ public enum LeftClickDisplayMode
 {
     CodexQuota,
     AgyQuota,
-    DoubaoQuota,
+    ClaudeQuota,
     Interaction,
     // Backward compatibility for v2 settings
     QuotaInfo = CodexQuota
@@ -23,7 +23,7 @@ public enum UsageSource
 {
     Codex,
     Agy,
-    Doubao
+    Claude
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -45,7 +45,7 @@ public enum SummaryTimeRange
 
 public sealed class WidgetSettings
 {
-    private const int CurrentSchemaVersion = 5;
+    private const int CurrentSchemaVersion = 6;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -79,7 +79,7 @@ public sealed class WidgetSettings
         try
         {
             var settings = File.Exists(path)
-                ? JsonSerializer.Deserialize<WidgetSettings>(File.ReadAllText(path), JsonOptions) ?? new WidgetSettings()
+                ? JsonSerializer.Deserialize<WidgetSettings>(MigrateSource(File.ReadAllText(path)), JsonOptions) ?? new WidgetSettings()
                 : new WidgetSettings();
             if (settings.SettingsSchemaVersion < 2)
             {
@@ -99,9 +99,9 @@ public sealed class WidgetSettings
                 {
                     settings.UsageSource = UsageSource.Agy;
                 }
-                else if (settings.LeftClickMode == LeftClickDisplayMode.DoubaoQuota)
+                else if (settings.LeftClickMode == LeftClickDisplayMode.ClaudeQuota)
                 {
-                    settings.UsageSource = UsageSource.Doubao;
+                    settings.UsageSource = UsageSource.Claude;
                 }
                 settings.SettingsSchemaVersion = CurrentSchemaVersion;
             }
@@ -117,6 +117,14 @@ public sealed class WidgetSettings
             BackupCorruptSettings(path);
             return new WidgetSettings();
         }
+    }
+
+    private static string MigrateSource(string json)
+    {
+        var root = System.Text.Json.Nodes.JsonNode.Parse(json);
+        if (root?[nameof(UsageSource)] is System.Text.Json.Nodes.JsonValue source && source.TryGetValue<string>(out var sourceName) && sourceName == "Doubao") root[nameof(UsageSource)] = "Claude";
+        if (root?[nameof(LeftClickMode)] is System.Text.Json.Nodes.JsonValue mode && mode.TryGetValue<string>(out var modeName) && modeName == "DoubaoQuota") root[nameof(LeftClickMode)] = "ClaudeQuota";
+        return root?.ToJsonString() ?? json;
     }
 
     public void Save()

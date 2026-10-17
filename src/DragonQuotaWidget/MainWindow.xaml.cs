@@ -17,7 +17,7 @@ namespace DragonQuotaWidget;
 
 public partial class MainWindow : Window
 {
-    private enum BubbleVisual { Normal, Reset, Activity }
+    private enum BubbleVisual { Normal, Reset, Activity, Completion }
 
     private const double FullBaseWidth = 390;
     private const double FullBaseHeight = 440;
@@ -27,7 +27,7 @@ public partial class MainWindow : Window
     private const int WeeklyWindowMinutes = 7 * 24 * 60;
     private readonly CodexUsageReader _codexReader = new();
     private readonly AntigravityUsageReader _agyReader = new();
-    private readonly DoubaoUsageReader _doubaoReader = new();
+    private readonly ClaudeUsageReader _claudeReader = new();
     private readonly CodexActivityMonitor _activityMonitor = new();
 
     private UsageSource SelectedSource
@@ -54,11 +54,11 @@ public partial class MainWindow : Window
     private readonly MediaPlayer _releaseAudio = new();
     private UsageSnapshot? _codexSnapshot;
     private UsageSnapshot? _agySnapshot;
-    private UsageSnapshot? _doubaoSnapshot;
+    private UsageSnapshot? _claudeSnapshot;
     private UsageSnapshot? SelectedSnapshot => SelectedSource switch
     {
         UsageSource.Agy => _agySnapshot,
-        UsageSource.Doubao => _doubaoSnapshot,
+        UsageSource.Claude => _claudeSnapshot,
         _ => _codexSnapshot
     };
     private bool _dragging;
@@ -71,6 +71,10 @@ public partial class MainWindow : Window
     private bool _codexIsWorking;
     private string _latestActivityStatus = "正在处理任务…";
     private string _latestActivityModel = "模型未知 · -- t/s";
+    private string _latestWorkDetail = "";
+    private string? _pendingCompletion;
+    private bool _completionOverlay;
+    private UsageSource? _activitySource;
     private BubbleVisual? _visibleBubbleVisual;
     private DateTimeOffset _interactionLockedUntil;
     private long _lastActivityRevision;
@@ -122,8 +126,8 @@ public partial class MainWindow : Window
         return icon;
     }
 
-    private bool IsInfoPanelVisible => _forceInfoPanelPreview ||
-        (!_forceCharacterOnlyPreview && (_settings.PinInfoPanel || _temporaryInfoPanelVisible));
+    private bool IsInfoPanelVisible => !_completionOverlay && (_forceInfoPanelPreview ||
+        (!_forceCharacterOnlyPreview && (_settings.PinInfoPanel || _temporaryInfoPanelVisible)));
 
     private void ApplySettings(bool persist = true)
     {
@@ -256,11 +260,11 @@ public partial class MainWindow : Window
             var snapshot = await Task.Run(() => source switch
             {
                 UsageSource.Agy => _agyReader.ReadSnapshot(),
-                UsageSource.Doubao => _doubaoReader.ReadSnapshot(forceRefresh: manual),
+                UsageSource.Claude => _claudeReader.ReadSnapshot(forceRefresh: manual),
                 _ => _codexReader.ReadSnapshot()
             });
             if (source == UsageSource.Agy) _agySnapshot = snapshot;
-            else if (source == UsageSource.Doubao) _doubaoSnapshot = snapshot;
+            else if (source == UsageSource.Claude) _claudeSnapshot = snapshot;
             else _codexSnapshot = snapshot;
 
             if (source == SelectedSource)
@@ -282,10 +286,20 @@ public partial class MainWindow : Window
         if (!await _activityGate.WaitAsync(0)) return;
         try
         {
-            var activity = await Task.Run(_activityMonitor.Poll);
+            var source = SelectedSource;
+            var activity = await Task.Run(() => source == UsageSource.Claude ? _claudeReader.Poll() : _activityMonitor.Poll());
+            if (source != SelectedSource) return;
+            if (_activitySource != source)
+            {
+                _activitySource = source;
+                _activityInitialized = false;
+                _pendingCompletion = null;
+                if (_visibleBubbleVisual is BubbleVisual.Activity or BubbleVisual.Completion) HideInteractionBubble(immediate: true);
+            }
             _codexIsWorking = activity.IsWorking;
             _latestActivityStatus = activity.StatusText;
             _latestActivityModel = activity.ModelSpeedText;
+            _latestWorkDetail = activity.WorkDetail ?? "";
             UpdateActivityDetails();
             if (!_activityInitialized)
             {
@@ -306,7 +320,13 @@ public partial class MainWindow : Window
 
             if (completed)
             {
-                ShowInfoPanelTemporarily();
+                _pendingCompletion = activity.CompletionText ?? "任务已完成";
+                if (_settings.ShowCodexActivityBubble)
+                {
+                    HideTemporaryInfoPanelImmediately();
+                    ShowCompletionIfNeeded();
+                }
+                else ShowInfoPanelTemporarily();
                 await RefreshAsync(false);
             }
             else if (changed && activity.IsWorking && _settings.ShowCodexActivityBubble)
@@ -326,8 +346,8 @@ public partial class MainWindow : Window
 
     private void UpdateActivityDetails()
     {
-        ActivityModelText.Text = _codexIsWorking ? _latestActivityModel : "Codex 空闲中";
-        ActivityModelText.Visibility = SelectedSource == UsageSource.Codex ? Visibility.Visible : Visibility.Hidden;
+        ActivityModelText.Text = _codexIsWorking && _activitySource == SelectedSource ? _latestActivityModel : $"{FormatSource(SelectedSource)} 空闲中";
+        ActivityModelText.Visibility = SelectedSource is UsageSource.Codex or UsageSource.Claude ? Visibility.Visible : Visibility.Hidden;
     }
 
     private void RenderSnapshot()
@@ -350,20 +370,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (SelectedSource == UsageSource.Doubao && _mode is not (WidgetMode.Quota or WidgetMode.FiveHourQuota))
+        if (_mode == WidgetMode.Quota)
         {
-            RenderDoubaoQuotaOnlyState();
-        }
-        else if (_mode == WidgetMode.Quota)
-        {
-            var title = SelectedSource == UsageSource.Doubao ? "近 7 天额度" : "每周额度";
-            var remaining = SelectedSource == UsageSource.Doubao ? "近 7 天剩余额度" : "每周剩余额度";
+            var title = "每周额度";
+            var remaining = "每周剩余额度";
             RenderQuota(snapshot, WeeklyWindowMinutes, title, remaining);
         }
         else if (_mode == WidgetMode.FiveHourQuota)
         {
-            var title = SelectedSource == UsageSource.Doubao ? "当前时段额度" : "5h 额度";
-            var remaining = SelectedSource == UsageSource.Doubao ? "当前时段剩余额度" : "5h 剩余额度";
+            var title = "5h 额度";
+            var remaining = "5h 剩余额度";
             RenderQuota(snapshot, FiveHourWindowMinutes, title, remaining);
         }
         else if (_mode == WidgetMode.Summary)
@@ -398,7 +414,7 @@ public partial class MainWindow : Window
         // Providers can omit a bucket once it is exhausted while still
         // returning its sibling window. Keep a complete absence as "--",
         // but render that partial snapshot as zero remaining quota.
-        if (window is null && HasAnyRateWindow(snapshot.RateLimits))
+        if (window is null && source != UsageSource.Claude && HasAnyRateWindow(snapshot.RateLimits))
         {
             window = new RateWindow(100d, targetWindowMinutes, null);
         }
@@ -409,7 +425,7 @@ public partial class MainWindow : Window
             MainSubText.Text = source switch
             {
                 UsageSource.Agy => "暂无可用 AGY 额度快照",
-                UsageSource.Doubao => "请启动并登录豆包电脑版后刷新",
+                UsageSource.Claude => "客户端未提供该周期额度",
                 _ => "产生一次 Codex 响应后再刷新"
             };
             UsageProgress.Value = 0;
@@ -427,8 +443,8 @@ public partial class MainWindow : Window
         MainLabelText.Text = remainingLabel;
         MainSubText.Text = snapshot.RateLimits?.IsStale == true
             ? $"{sourceLabel} 旧缓存 · {FormatWindow(window.WindowMinutes)}"
-            : source == UsageSource.Doubao
-                ? $"豆包官方额度 · {FormatWindow(window.WindowMinutes)}"
+            : source == UsageSource.Claude
+                ? $"Claude 客户端缓存 · {FormatWindow(window.WindowMinutes)}"
                 : $"{sourceLabel} 汇总 · {FormatWindow(window.WindowMinutes)}";
         UsageProgress.Value = remaining;
         Detail1Label.Text = "已使用";
@@ -450,20 +466,6 @@ public partial class MainWindow : Window
     private static bool HasAnyRateWindow(RateLimitSnapshot? limits) =>
         limits?.Primary is not null || limits?.Secondary is not null;
 
-    private void RenderDoubaoQuotaOnlyState()
-    {
-        TitleText.Text = "豆包额度";
-        MainValueText.Text = "--";
-        MainLabelText.Text = "豆包仅提供额度数据";
-        MainSubText.Text = "请选择“当前”或“近7天”";
-        UsageProgress.Value = 0;
-        Detail1Label.Text = "当前时段";
-        Detail2Label.Text = "近 7 天";
-        Detail3Label.Text = "数据来源";
-        Detail1Value.Text = Detail2Value.Text = "--";
-        Detail3Value.Text = "豆包客户端";
-    }
-
     private void RenderTokenPeriod(UsageSnapshot snapshot)
     {
         var source = SelectedSource;
@@ -473,12 +475,12 @@ public partial class MainWindow : Window
 
         TitleText.Text = isRolling ? $"{sourceLabel} 24h Token" : $"{sourceLabel} 今日 Token";
 
-        if (source == UsageSource.Agy)
+        if (source is UsageSource.Agy or UsageSource.Claude)
         {
-            var agy = period.Agy;
+            var agy = source == UsageSource.Claude ? period.Claude : period.Agy;
             MainValueText.Text = FormatTokens(agy.TotalTokens);
             MainLabelText.Text = "输入 + 输出";
-            MainSubText.Text = $"AGY 会话 · 缓存命中 {agy.CacheHitRate * 100d:0.0}%";
+            MainSubText.Text = $"{sourceLabel} 会话 · 缓存命中 {agy.CacheHitRate * 100d:0.0}%";
             UsageProgress.Value = agy.CacheHitRate * 100d;
             Detail1Label.Text = "输入";
             Detail1Value.Text = FormatTokens(agy.InputTokens);
@@ -516,12 +518,12 @@ public partial class MainWindow : Window
 
         TitleText.Text = $"{sourceLabel} {baseTitle}";
 
-        if (source == UsageSource.Agy)
+        if (source is UsageSource.Agy or UsageSource.Claude)
         {
-            var agy = period.Agy;
+            var agy = source == UsageSource.Claude ? period.Claude : period.Agy;
             MainValueText.Text = FormatTokens(agy.TotalTokens);
             MainLabelText.Text = "输入 + 输出";
-            MainSubText.Text = $"AGY 会话 · 缓存命中 {agy.CacheHitRate * 100d:0.0}%";
+            MainSubText.Text = $"{sourceLabel} 会话 · 缓存命中 {agy.CacheHitRate * 100d:0.0}%";
             UsageProgress.Value = agy.CacheHitRate * 100d;
             Detail1Label.Text = "输入";
             Detail1Value.Text = FormatTokens(agy.InputTokens);
@@ -556,7 +558,7 @@ public partial class MainWindow : Window
             TitleText.Text = $"{sourceLabel} 本轮 Token";
             MainValueText.Text = "--";
             MainLabelText.Text = "暂无活动会话";
-            MainSubText.Text = source == UsageSource.Agy ? "等待 AGY 写入会话事件" : "等待 Codex 写入会话事件";
+            MainSubText.Text = $"等待 {sourceLabel} 写入会话事件";
             UsageProgress.Value = 0;
             Detail1Label.Text = "输入";
             Detail2Label.Text = "输出";
@@ -591,7 +593,7 @@ public partial class MainWindow : Window
     private static string FormatSource(UsageSource source) => source switch
     {
         UsageSource.Agy => "AGY",
-        UsageSource.Doubao => "豆包",
+        UsageSource.Claude => "Claude",
         _ => "Codex"
     };
 
@@ -656,8 +658,8 @@ public partial class MainWindow : Window
     {
         var active = new SolidColorBrush(Color.FromArgb(90, 190, 179, 255));
         var inactive = new SolidColorBrush(Color.FromArgb(31, 255, 255, 255));
-        QuotaModeButton.Content = SelectedSource == UsageSource.Doubao ? "近7天" : "每周";
-        FiveHourQuotaModeButton.Content = SelectedSource == UsageSource.Doubao ? "当前" : "5h";
+        QuotaModeButton.Content = "每周";
+        FiveHourQuotaModeButton.Content = "5h";
         QuotaModeButton.Background = _mode == WidgetMode.Quota ? active : inactive;
         FiveHourQuotaModeButton.Background = _mode == WidgetMode.FiveHourQuota ? active : inactive;
         SummaryModeButton.Background = _mode == WidgetMode.Summary ? active : inactive;
@@ -687,12 +689,12 @@ public partial class MainWindow : Window
         SourceToggleButton.ToolTip = SelectedSource switch
         {
             UsageSource.Codex => "当前显示 Codex；点击切换到 AGY",
-            UsageSource.Agy => "当前显示 AGY；点击切换到豆包",
-            _ => "当前显示豆包；点击切换到 Codex"
+            UsageSource.Agy => "当前显示 AGY；点击切换到 Claude",
+            _ => "当前显示 Claude；点击切换到 Codex"
         };
         CodexQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.CodexQuota;
         AgyQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.AgyQuota;
-        DoubaoQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.DoubaoQuota;
+        ClaudeQuotaModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.ClaudeQuota;
         InteractionDisplayModeMenuItem.IsChecked = _settings.LeftClickMode == LeftClickDisplayMode.Interaction;
         LockPositionMenuItem.IsChecked = _settings.LockPosition;
         PinInfoPanelMenuItem.IsChecked = _settings.PinInfoPanel;
@@ -734,9 +736,9 @@ public partial class MainWindow : Window
         {
             _settings.UsageSource = UsageSource.Agy;
         }
-        else if (mode == LeftClickDisplayMode.DoubaoQuota)
+        else if (mode == LeftClickDisplayMode.ClaudeQuota)
         {
-            _settings.UsageSource = UsageSource.Doubao;
+            _settings.UsageSource = UsageSource.Claude;
             _mode = WidgetMode.FiveHourQuota;
             _settings.Mode = _mode;
         }
@@ -750,17 +752,17 @@ public partial class MainWindow : Window
     {
         if (Application.Current.Properties["ForceUsageSource"] is UsageSource) return;
         _settings.UsageSource = NextUsageSource(SelectedSource);
-        if (_settings.UsageSource == UsageSource.Doubao)
+        if (_settings.UsageSource == UsageSource.Claude)
         {
             _mode = WidgetMode.FiveHourQuota;
             _settings.Mode = _mode;
         }
-        if (_settings.LeftClickMode is LeftClickDisplayMode.CodexQuota or LeftClickDisplayMode.AgyQuota or LeftClickDisplayMode.DoubaoQuota)
+        if (_settings.LeftClickMode is LeftClickDisplayMode.CodexQuota or LeftClickDisplayMode.AgyQuota or LeftClickDisplayMode.ClaudeQuota)
         {
             _settings.LeftClickMode = _settings.UsageSource switch
             {
                 UsageSource.Agy => LeftClickDisplayMode.AgyQuota,
-                UsageSource.Doubao => LeftClickDisplayMode.DoubaoQuota,
+                UsageSource.Claude => LeftClickDisplayMode.ClaudeQuota,
                 _ => LeftClickDisplayMode.CodexQuota
             };
         }
@@ -774,7 +776,7 @@ public partial class MainWindow : Window
     public static UsageSource NextUsageSource(UsageSource source) => source switch
     {
         UsageSource.Codex => UsageSource.Agy,
-        UsageSource.Agy => UsageSource.Doubao,
+        UsageSource.Agy => UsageSource.Claude,
         _ => UsageSource.Codex
     };
 
@@ -831,7 +833,7 @@ public partial class MainWindow : Window
     private void CompleteDragonInteraction()
     {
         PlaySound(_releaseAudio);
-        if (_settings.LeftClickMode is LeftClickDisplayMode.CodexQuota or LeftClickDisplayMode.AgyQuota or LeftClickDisplayMode.DoubaoQuota)
+        if (_settings.LeftClickMode is LeftClickDisplayMode.CodexQuota or LeftClickDisplayMode.AgyQuota or LeftClickDisplayMode.ClaudeQuota)
         {
             ShowInfoPanelTemporarily();
             _ = RefreshAsync(true);
@@ -845,7 +847,7 @@ public partial class MainWindow : Window
 
     private void SuspendActivityBubbleForInteraction()
     {
-        if (_visibleBubbleVisual == BubbleVisual.Activity)
+        if (_visibleBubbleVisual is BubbleVisual.Activity or BubbleVisual.Completion)
         {
             HideInteractionBubble(immediate: true);
         }
@@ -886,13 +888,41 @@ public partial class MainWindow : Window
     private void ShowActivityBubble(string message)
     {
         if (!_settings.ShowCodexActivityBubble || !_codexIsWorking || IsInfoPanelVisible || _dragging ||
-            _visibleBubbleVisual is BubbleVisual.Normal or BubbleVisual.Reset ||
+            _visibleBubbleVisual is BubbleVisual.Normal or BubbleVisual.Reset or BubbleVisual.Completion ||
             (_resetBubblePinned && DateTimeOffset.Now < _interactionLockedUntil)) return;
+        WorkHintText.Text = _latestWorkDetail;
         ShowBubble(message, BubbleVisual.Activity, autoHide: false, animate: _visibleBubbleVisual != BubbleVisual.Activity, TimeSpan.Zero);
+    }
+
+    private bool ShowCompletionIfNeeded()
+    {
+        if (_pendingCompletion is null || _dragging || _resetBubblePinned || !_settings.ShowCodexActivityBubble) return false;
+        var text = _pendingCompletion;
+        _pendingCompletion = null;
+        _infoPanelTimer.Stop();
+        _temporaryInfoPanelVisible = false;
+        _completionOverlay = true;
+        DataPanel.BeginAnimation(OpacityProperty, null);
+        DataPanel.Visibility = Visibility.Collapsed;
+        ApplyScale(_settings.Scale, persist: false);
+        WorkHintText.Text = "✓ 任务完成";
+        ShowBubble(text, BubbleVisual.Completion, autoHide: true, animate: true,
+            TimeSpan.FromSeconds(_settings.InfoPanelDisplaySeconds));
+        return true;
+    }
+
+    private void EndCompletionOverlay()
+    {
+        if (!_completionOverlay) return;
+        _completionOverlay = false;
+        DataPanel.Visibility = IsInfoPanelVisible ? Visibility.Visible : Visibility.Collapsed;
+        DataPanel.Opacity = IsInfoPanelVisible ? 1 : 0;
+        ApplyScale(_settings.Scale, persist: false);
     }
 
     private void RestoreActivityBubbleIfNeeded()
     {
+        if (ShowCompletionIfNeeded()) return;
         if (_codexIsWorking && _settings.ShowCodexActivityBubble && !IsInfoPanelVisible && !_dragging &&
             _visibleBubbleVisual is null)
         {
@@ -907,6 +937,7 @@ public partial class MainWindow : Window
         ApplyBubbleVisual(visual);
         InteractionBubbleText.Text = message;
         InteractionBubble.Visibility = Visibility.Visible;
+        ApplyScale(_settings.Scale, persist: false);
         InteractionBubble.BeginAnimation(OpacityProperty, null);
         BubbleScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         BubbleScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
@@ -937,11 +968,14 @@ public partial class MainWindow : Window
 
     private void ApplyBubbleVisual(BubbleVisual visual)
     {
-        InteractionBubble.Width = visual switch { BubbleVisual.Reset => 244, BubbleVisual.Activity => 252, _ => 170 };
-        InteractionBubble.Height = visual switch { BubbleVisual.Reset => 104, BubbleVisual.Activity => 126, _ => 78 };
+        InteractionBubble.Width = visual switch { BubbleVisual.Reset => 244, BubbleVisual.Activity or BubbleVisual.Completion => 252, _ => 170 };
+        InteractionBubble.Height = visual switch { BubbleVisual.Reset => 104, BubbleVisual.Activity or BubbleVisual.Completion => double.NaN, _ => 78 };
+        InteractionBubble.MinHeight = visual is BubbleVisual.Activity or BubbleVisual.Completion ? 90 : 0;
+        InteractionBubble.MaxHeight = visual is BubbleVisual.Activity or BubbleVisual.Completion ? 244 : double.PositiveInfinity;
+        WorkHintText.Visibility = visual is BubbleVisual.Activity or BubbleVisual.Completion ? Visibility.Visible : Visibility.Collapsed;
         BubbleBorder.CornerRadius = new CornerRadius(visual == BubbleVisual.Reset ? 30 : 24);
         InteractionBubbleText.FontFamily = new System.Windows.Media.FontFamily("Microsoft YaHei UI");
-        InteractionBubbleText.FontSize = visual switch { BubbleVisual.Reset => 27, BubbleVisual.Activity => 13.5, _ => 15 };
+        InteractionBubbleText.FontSize = visual switch { BubbleVisual.Reset => 27, BubbleVisual.Activity or BubbleVisual.Completion => 13.5, _ => 15 };
         InteractionBubbleText.FontWeight = visual == BubbleVisual.Reset ? FontWeights.ExtraBold : FontWeights.SemiBold;
         InteractionBubbleText.FontStyle = visual == BubbleVisual.Reset ? FontStyles.Italic : FontStyles.Normal;
         InteractionBubbleText.Effect = visual == BubbleVisual.Reset
@@ -968,6 +1002,8 @@ public partial class MainWindow : Window
             InteractionBubble.Opacity = 0;
             InteractionBubble.Visibility = Visibility.Collapsed;
             _visibleBubbleVisual = null;
+            EndCompletionOverlay();
+            ApplyScale(_settings.Scale, persist: false);
             if (restoreActivityAfter) RestoreActivityBubbleIfNeeded();
             return;
         }
@@ -977,6 +1013,8 @@ public partial class MainWindow : Window
         {
             InteractionBubble.Visibility = Visibility.Collapsed;
             _visibleBubbleVisual = null;
+            EndCompletionOverlay();
+            ApplyScale(_settings.Scale, persist: false);
             if (restoreActivityAfter) RestoreActivityBubbleIfNeeded();
         };
         InteractionBubble.BeginAnimation(OpacityProperty, fade);
@@ -1088,7 +1126,10 @@ public partial class MainWindow : Window
             ? ArtBaseWidth * previousScale / 2d
             : previousWidth - ArtBaseWidth * previousScale / 2d);
         var anchorBottom = Top + previousHeight;
-        var baseWidth = IsInfoPanelVisible ? FullBaseWidth : ArtBaseWidth;
+        // Reserve space beside the character. Only the outer 32px of the
+        // artwork overlaps the bubble; the face and horns remain visible.
+        var bubbleWidth = ArtBaseWidth + InteractionBubble.Width - 36 + 8;
+        var baseWidth = IsInfoPanelVisible ? FullBaseWidth : _visibleBubbleVisual is not null ? bubbleWidth : ArtBaseWidth;
         var baseHeight = IsInfoPanelVisible ? FullBaseHeight : ArtBaseHeight;
         Width = baseWidth * scale;
         Height = baseHeight * scale;
@@ -1190,7 +1231,7 @@ public partial class MainWindow : Window
     private void ConversationMenuItem_Click(object sender, RoutedEventArgs e) => SetMode(WidgetMode.Conversation);
     private void CodexQuotaModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.CodexQuota);
     private void AgyQuotaModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.AgyQuota);
-    private void DoubaoQuotaModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.DoubaoQuota);
+    private void ClaudeQuotaModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.ClaudeQuota);
     private void InteractionDisplayModeMenuItem_Click(object sender, RoutedEventArgs e) => SetLeftClickMode(LeftClickDisplayMode.Interaction);
     private void HideInfoButton_Click(object sender, RoutedEventArgs e) => HideInfoPanel();
     private void ShowInfoMenuItem_Click(object sender, RoutedEventArgs e) => ShowInfoPanelTemporarily();
