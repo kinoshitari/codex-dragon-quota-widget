@@ -1126,11 +1126,15 @@ public partial class MainWindow : Window
             ? ArtBaseWidth * previousScale / 2d
             : previousWidth - ArtBaseWidth * previousScale / 2d);
         var anchorBottom = Top + previousHeight;
-        // Reserve space beside the character. Only the outer 32px of the
-        // artwork overlaps the bubble; the face and horns remain visible.
-        var bubbleWidth = ArtBaseWidth + InteractionBubble.Width - 36 + 8;
-        var baseWidth = IsInfoPanelVisible ? FullBaseWidth : _visibleBubbleVisual is not null ? bubbleWidth : ArtBaseWidth;
-        var baseHeight = IsInfoPanelVisible ? FullBaseHeight : ArtBaseHeight;
+        // Anchor the bubble's tip by the upper, inward-facing horn. Lift the
+        // body by its measured height so longer text grows upward, not over
+        // the face. Resizing still preserves the character's desktop anchor.
+        var hasBubble = _visibleBubbleVisual is not null;
+        if (hasBubble) InteractionBubble.Measure(new System.Windows.Size(InteractionBubble.Width + 8, double.PositiveInfinity));
+        var bubbleWidth = ArtBaseWidth + InteractionBubble.Width - 130;
+        var bubbleHeight = ArtBaseHeight + Math.Max(0, InteractionBubble.DesiredSize.Height - 28);
+        var baseWidth = IsInfoPanelVisible ? FullBaseWidth : hasBubble ? Math.Max(ArtBaseWidth, bubbleWidth) : ArtBaseWidth;
+        var baseHeight = IsInfoPanelVisible ? FullBaseHeight : hasBubble ? bubbleHeight : ArtBaseHeight;
         Width = baseWidth * scale;
         Height = baseHeight * scale;
         RootGrid.LayoutTransform = new ScaleTransform(scale, scale);
