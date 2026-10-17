@@ -159,8 +159,8 @@
                             <TextBlock x:Name="InfoPanelDurationValueText" Grid.Column="1" Text="5 秒" FontSize="13" FontWeight="Bold" Foreground="#FF7567C7" VerticalAlignment="Center" />
                         </Grid>
                         <Slider x:Name="InfoPanelDurationSlider" Minimum="2" Maximum="30" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,9,0,0" ValueChanged="InfoPanelDurationSlider_ValueChanged" />
-                        <CheckBox x:Name="ShowCodexActivityBubbleCheckBox" Content="工作时显示 Codex 可观察状态气泡" Margin="0,15,0,2" />
-                        <TextBlock Text="显示思考中、调用工具、修改文件和可见工作摘要；不展示隐藏推理内容。" TextWrapping="Wrap" FontSize="11" Foreground="#FF8C84A7" Margin="24,0,0,0" />
+                        <CheckBox x:Name="ShowCodexActivityBubbleCheckBox" Content="工作时显示 Codex 思考摘要气泡" Margin="0,15,0,2" />
+                        <TextBlock Text="显示客户端提供的思考摘要与公开进度；模型和平均输出速度显示在 Codex 额度提示框内。" TextWrapping="Wrap" FontSize="11" Foreground="#FF8C84A7" Margin="24,0,0,0" />
                     </StackPanel>
                 </Border>
 

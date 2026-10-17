@@ -132,7 +132,7 @@
             </ContextMenu>
         </Grid.ContextMenu>
 
-        <Grid x:Name="DataPanel" Width="292" Height="210" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8,10,0,0" Opacity="1" Panel.ZIndex="3">
+        <Grid x:Name="DataPanel" Width="292" Height="234" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8,10,0,0" Opacity="1" Panel.ZIndex="3">
             <Border Background="{StaticResource PanelBrush}" BorderBrush="#667F70C7" BorderThickness="1" CornerRadius="28" Padding="18,14,14,12">
                 <Border.Effect>
                     <DropShadowEffect Color="#7A171128" BlurRadius="24" ShadowDepth="6" Opacity="0.62" />
@@ -144,6 +144,7 @@
                         <RowDefinition Height="46" />
                         <RowDefinition Height="16" />
                         <RowDefinition Height="39" />
+                        <RowDefinition Height="24" />
                         <RowDefinition Height="16" />
                     </Grid.RowDefinitions>
                     <Grid Grid.Row="0">
@@ -201,7 +202,10 @@
                             <TextBlock x:Name="Detail3Value" Text="--" Foreground="#FFF8F6FF" FontSize="12.5" FontWeight="SemiBold" Margin="0,3,0,0" />
                         </StackPanel>
                     </Grid>
-                    <Grid Grid.Row="5">
+                    <TextBlock x:Name="ActivityModelText" Grid.Row="5" Text="Codex 空闲中" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="SemiBold"
+                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                               ToolTip="当前 Codex 任务的模型与推理强度；均速为任务开始以来的输出 Token / 经过秒数（含工具等待），随 Token 记录更新。" />
+                    <Grid Grid.Row="6">
                         <TextBlock x:Name="StatusText" Text="正在读取本地数据…" Foreground="#FF9E97C4" FontSize="9.5" VerticalAlignment="Bottom" TextTrimming="CharacterEllipsis" />
                     </Grid>
                 </Grid>
@@ -209,7 +213,7 @@
             <Button x:Name="SourceToggleButton" Style="{StaticResource SourceBadgeButtonStyle}" Content="Codex"
                     HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-7,-7,0" Panel.ZIndex="10"
                     ToolTip="当前显示 Codex；点击切换到 AGY" Click="SourceToggleButton_Click" />
-            <Path x:Name="QuotaTail" Data="M 229,205 C 246,218 252,231 245,244 C 232,229 218,220 202,213 Z" Fill="#F13A2D66" HorizontalAlignment="Left" VerticalAlignment="Top" Panel.ZIndex="-1" />
+            <Path x:Name="QuotaTail" Data="M 229,229 C 246,242 252,255 245,268 C 232,253 218,244 202,237 Z" Fill="#F13A2D66" HorizontalAlignment="Left" VerticalAlignment="Top" Panel.ZIndex="-1" />
         </Grid>
 
         <Grid x:Name="InteractionBubble" Width="170" Height="78" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="4,9,0,0"

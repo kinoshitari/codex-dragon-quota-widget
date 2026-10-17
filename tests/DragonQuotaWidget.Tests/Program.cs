@@ -41,6 +41,7 @@ public static class Program
             RunTest("Codex: Resumed conversation retains earlier history outside timed windows", () => TestResumedConversationHistory(testDir));
             RunTest("Placement: Quota panel mirrors inward and retains the dragon anchor", TestPanelMirrorLayout);
             RunTest("Activity: Parallel session completion is observed", () => TestActivityMonitor_ParallelSessions(testDir));
+            RunTest("Activity: Public summaries, model, average TPS and task reset", () => TestActivitySummaryAndRate(testDir));
             RunTest("Models: Existing Codex/Work calculation and serialization compatibility", TestUsageModels_CodexCompatibility);
             RunTest("Settings: Legacy QuotaInfo mode maps to Codex quota", TestSettings_LegacyQuotaInfoAlias);
             RunTest("Doubao: Quota text parses current and seven-day windows", TestDoubaoQuotaParsing);
@@ -728,6 +729,43 @@ public static class Program
                 Call("UpdateDragonMirror");
                 AssertEqual(System.Windows.HorizontalAlignment.Left, panel.HorizontalAlignment, "Right-side quota panel belongs on the left");
                 AssertEqual(System.Windows.HorizontalAlignment.Right, dragon.HorizontalAlignment, "Right-side artwork belongs on the right");
+                if (Environment.GetEnvironmentVariable("DRAGON_PREVIEW_DIR") is { Length: > 0 } previewDirectory)
+                {
+                    Directory.CreateDirectory(previewDirectory);
+                    settings.UsageSource = UsageSource.Codex;
+                    settings.ShowCodexActivityBubble = true;
+                    Set("_codexIsWorking", true);
+                    Set("_latestActivityModel", "6.1sol max · 均 50 t/s");
+                    Call("UpdateActivityDetails");
+                    AssertEqual("6.1sol max · 均 50 t/s", ((System.Windows.Controls.TextBlock)window.FindName("ActivityModelText")).Text, "Model/TPS belongs to the quota panel");
+                    void Capture(string name, double width, double height)
+                    {
+                        var root = (System.Windows.FrameworkElement)window.FindName("RootGrid");
+                        root.Measure(new System.Windows.Size(width, height));
+                        root.Arrange(new System.Windows.Rect(0, 0, width, height));
+                        root.UpdateLayout();
+                        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)width, (int)height, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                        bitmap.Render(root);
+                        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                        using var output = File.Create(Path.Combine(previewDirectory, name));
+                        encoder.Save(output);
+                    }
+                    panel.Visibility = System.Windows.Visibility.Visible;
+                    Capture("quota.png", 390, 440);
+                    panel.Visibility = System.Windows.Visibility.Collapsed;
+                    Set("_temporaryInfoPanelVisible", false);
+                    Call("ApplyScale", 1d, false);
+                    Call("ShowActivityBubble", "正在核对会话历史与累计 Token，并调整额度提示框中的模型名称和速度显示。");
+                    var bubble = (System.Windows.FrameworkElement)window.FindName("InteractionBubble");
+                    bubble.BeginAnimation(System.Windows.UIElement.OpacityProperty, null);
+                    bubble.Opacity = 1;
+                    var transform = (System.Windows.Media.ScaleTransform)bubble.RenderTransform;
+                    transform.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, null);
+                    transform.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, null);
+                    transform.ScaleX = transform.ScaleY = 1;
+                    Capture("summary.png", 268, 300);
+                }
                 app.Shutdown();
             }
             catch (Exception ex) { failure = ex; }
@@ -849,6 +887,45 @@ public static class Program
         Assert(snapshot.RateLimits?.Primary is not null, "Quota should be discovered outside the newest eight files");
         var limits = snapshot.RateLimits!;
         Assert(Math.Abs(limits.Primary!.UsedPercent - 77d) < 1e-4, "The newest quota event by timestamp should win");
+    }
+
+    private static void TestActivitySummaryAndRate(string rootDir)
+    {
+        var root = Path.Combine(rootDir, "activity-summary");
+        Directory.CreateDirectory(Path.Combine(root, "sessions"));
+        var path = Path.Combine(root, "sessions", "task.jsonl");
+        var start = DateTimeOffset.UtcNow.AddMinutes(-1);
+        string Record(int seconds, string type, object payload) => JsonSerializer.Serialize(new { timestamp = start.AddSeconds(seconds), type, payload });
+        string Tokens(int seconds, int total, int last) => Record(seconds, "event_msg", new
+        {
+            type = "token_count", info = new { total_token_usage = new { output_tokens = total }, last_token_usage = new { output_tokens = last } }
+        });
+        File.WriteAllLines(path, new[] {
+            Record(-1, "turn_context", new { model = "gpt-6.1-sol", effort = "max" }),
+            Tokens(-1, 10000, 200),
+            CreateActivityEvent(start, "task_started"),
+            Record(1, "response_item", new { type = "reasoning", summary = new[] { new { type = "summary_text", text = "正在核对日志字段，并准备调整额度框布局。" } }, encrypted_content = "never show this", content = "never show raw reasoning" }),
+            Tokens(10, 10500, 500)
+        });
+        var monitor = new CodexActivityMonitor(root);
+        var snapshot = monitor.Poll();
+        AssertEqual("正在核对日志字段，并准备调整额度框布局。", snapshot.StatusText, "Public summary is shown");
+        AssertEqual("gpt-6.1-sol", snapshot.Model, "Model comes from turn context");
+        AssertEqual("max", snapshot.Effort, "Effort comes from turn context");
+        AssertEqual(50d, snapshot.TokensPerSecond, "500 new output tokens over ten task seconds");
+        AssertEqual("6.1sol max · 均 50 t/s", snapshot.ModelSpeedText, "Compact model and rate display");
+        File.AppendAllLines(path, new[] { Tokens(20, 10500, 500), Record(21, "response_item", new { type = "function_call", name = "exec_command", arguments = "never show tool input" }) });
+        snapshot = monitor.Poll();
+        AssertEqual(50d, snapshot.TokensPerSecond, "Repeated usage is not counted again");
+        Assert(snapshot.StatusText.StartsWith("正在核对"), "Tool status does not erase the summary");
+        File.AppendAllLines(path, new[] { CreateActivityEvent(start.AddSeconds(22), "task_complete"), CreateActivityEvent(start.AddSeconds(30), "task_started"), Record(31, "response_item", new { type = "reasoning", summary = Array.Empty<object>(), content = "never show raw reasoning" }) });
+        snapshot = monitor.Poll();
+        AssertEqual("开始处理任务…", snapshot.StatusText, "New task clears old summary; raw content is ignored");
+        Assert(snapshot.TokensPerSecond is null, "New task clears old rate");
+        File.AppendAllText(path, Tokens(40, 10700, 200) + Environment.NewLine);
+        AssertEqual(20d, monitor.Poll().TokensPerSecond, "New task uses only its own output");
+        File.AppendAllText(path, CreateActivityEvent(start.AddSeconds(41), "task_complete") + Environment.NewLine);
+        Assert(monitor.Poll().Model is null, "Idle display does not retain an active model");
     }
 
     private static void TestActivityMonitor_ParallelSessions(string rootDir)

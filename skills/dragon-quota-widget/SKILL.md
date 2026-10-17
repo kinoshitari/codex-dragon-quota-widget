@@ -5,7 +5,7 @@ description: Launch, stop, or inspect the local Codex and AGY companion named �
 
 # 傻龙插件
 
-This plugin controls a local Windows companion widget for Codex and AGY. It does not modify client applications or read authentication files. Its activity bubble maps observable local lifecycle events to short status labels and never exposes hidden reasoning, prompts, or tool inputs.
+This plugin controls a local Windows companion widget for Codex and AGY. It does not modify client applications or read authentication files. Its activity bubble shows provider-supplied `summary_text` reasoning summaries and public progress, falling back to lifecycle status labels. Raw reasoning, encrypted content, prompts and tool inputs are not displayed. The Codex quota panel shows the active model, reasoning effort and average output tokens per elapsed task second (including tool waiting), updated with token records; unavailable speed is `-- t/s`.
 
 ## Start the widget
 

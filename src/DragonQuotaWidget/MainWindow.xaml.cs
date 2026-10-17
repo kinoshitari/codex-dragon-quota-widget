@@ -70,6 +70,7 @@ public partial class MainWindow : Window
     private bool _resetBubblePinned;
     private bool _codexIsWorking;
     private string _latestActivityStatus = "正在处理任务…";
+    private string _latestActivityModel = "模型未知 · -- t/s";
     private BubbleVisual? _visibleBubbleVisual;
     private DateTimeOffset _interactionLockedUntil;
     private long _lastActivityRevision;
@@ -284,6 +285,8 @@ public partial class MainWindow : Window
             var activity = await Task.Run(_activityMonitor.Poll);
             _codexIsWorking = activity.IsWorking;
             _latestActivityStatus = activity.StatusText;
+            _latestActivityModel = activity.ModelSpeedText;
+            UpdateActivityDetails();
             if (!_activityInitialized)
             {
                 _activityInitialized = true;
@@ -321,8 +324,15 @@ public partial class MainWindow : Window
         }
     }
 
+    private void UpdateActivityDetails()
+    {
+        ActivityModelText.Text = _codexIsWorking ? _latestActivityModel : "Codex 空闲中";
+        ActivityModelText.Visibility = SelectedSource == UsageSource.Codex ? Visibility.Visible : Visibility.Hidden;
+    }
+
     private void RenderSnapshot()
     {
+        UpdateActivityDetails();
         var snapshot = SelectedSnapshot;
         var sourceLabel = FormatSource(SelectedSource);
         if (snapshot is null)
@@ -878,7 +888,7 @@ public partial class MainWindow : Window
         if (!_settings.ShowCodexActivityBubble || !_codexIsWorking || IsInfoPanelVisible || _dragging ||
             _visibleBubbleVisual is BubbleVisual.Normal or BubbleVisual.Reset ||
             (_resetBubblePinned && DateTimeOffset.Now < _interactionLockedUntil)) return;
-        ShowBubble(message, BubbleVisual.Activity, autoHide: false, animate: true, TimeSpan.Zero);
+        ShowBubble(message, BubbleVisual.Activity, autoHide: false, animate: _visibleBubbleVisual != BubbleVisual.Activity, TimeSpan.Zero);
     }
 
     private void RestoreActivityBubbleIfNeeded()
@@ -927,8 +937,8 @@ public partial class MainWindow : Window
 
     private void ApplyBubbleVisual(BubbleVisual visual)
     {
-        InteractionBubble.Width = visual switch { BubbleVisual.Reset => 244, BubbleVisual.Activity => 236, _ => 170 };
-        InteractionBubble.Height = visual switch { BubbleVisual.Reset => 104, BubbleVisual.Activity => 94, _ => 78 };
+        InteractionBubble.Width = visual switch { BubbleVisual.Reset => 244, BubbleVisual.Activity => 252, _ => 170 };
+        InteractionBubble.Height = visual switch { BubbleVisual.Reset => 104, BubbleVisual.Activity => 126, _ => 78 };
         BubbleBorder.CornerRadius = new CornerRadius(visual == BubbleVisual.Reset ? 30 : 24);
         InteractionBubbleText.FontFamily = new System.Windows.Media.FontFamily("Microsoft YaHei UI");
         InteractionBubbleText.FontSize = visual switch { BubbleVisual.Reset => 27, BubbleVisual.Activity => 13.5, _ => 15 };

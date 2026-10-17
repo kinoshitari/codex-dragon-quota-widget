@@ -6,8 +6,8 @@ namespace DragonQuotaWidget;
 
 /// <summary>
 /// Reads observable Codex lifecycle events from the newest local session log.
-/// It deliberately maps reasoning events to generic status text and never
-/// exposes hidden reasoning payloads, user prompts, tool inputs, or secrets.
+/// Shows provider-supplied reasoning summaries and observable progress only.
+/// Raw reasoning, encrypted content, user prompts and tool inputs are not displayed.
 /// </summary>
 public sealed class CodexActivityMonitor
 {
@@ -21,6 +21,9 @@ public sealed class CodexActivityMonitor
     private long _revision;
     private long _completionRevision;
     private DateTimeOffset _eventAt = DateTimeOffset.MinValue;
+    private string? _model;
+    private string? _effort;
+    private double? _tokensPerSecond;
 
     public CodexActivityMonitor(string? codexRootOverride = null)
     {
@@ -81,6 +84,7 @@ public sealed class CodexActivityMonitor
             {
                 var initialOffset = Math.Max(0, file.Length - InitialTailBytes);
                 session = new TrackedSession(initialOffset, initialOffset > 0);
+                if (initialOffset > 0) ReadEarlierContext(file, session, initialOffset);
                 _tracked[file.FullName] = session;
             }
             ReadSession(file, session);
@@ -91,17 +95,42 @@ public sealed class CodexActivityMonitor
             .OrderByDescending(session => session.EventAt)
             .FirstOrDefault();
         var nextWorking = active is not null;
-        var nextStatus = active?.Status ?? "Codex 空闲中";
+        var nextStatus = active?.Summary ?? active?.Status ?? "Codex 空闲中";
         var nextEventAt = active?.EventAt ?? _tracked.Values.Select(session => session.EventAt).DefaultIfEmpty(_eventAt).Max();
-        if (_working != nextWorking || !string.Equals(_status, nextStatus, StringComparison.Ordinal))
+        if (_working != nextWorking || !string.Equals(_status, nextStatus, StringComparison.Ordinal) ||
+            _model != active?.Model || _effort != active?.Effort || _tokensPerSecond != active?.TokensPerSecond)
         {
             _working = nextWorking;
             _status = nextStatus;
             _eventAt = nextEventAt;
+            _model = active?.Model;
+            _effort = active?.Effort;
+            _tokensPerSecond = active?.TokensPerSecond;
             _revision++;
         }
 
         return Snapshot();
+    }
+
+    private void ReadEarlierContext(FileInfo file, TrackedSession session, long endOffset)
+    {
+        try
+        {
+            using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            long position = 0;
+            while (reader.ReadLine() is { } line && position < endOffset)
+            {
+                position += Encoding.UTF8.GetByteCount(line) + 1;
+                if (line.Contains("\"turn_context\"", StringComparison.Ordinal) ||
+                    line.Contains("\"task_started\"", StringComparison.Ordinal) ||
+                    line.Contains("\"task_complete\"", StringComparison.Ordinal) ||
+                    line.Contains("\"turn_aborted\"", StringComparison.Ordinal) ||
+                    line.Contains("\"token_count\"", StringComparison.Ordinal)) ProcessLine(session, line);
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private void ReadSession(FileInfo file, TrackedSession session)
@@ -166,9 +195,14 @@ public sealed class CodexActivityMonitor
             {
                 ProcessEvent(session, payload, eventAt);
             }
-            else if (outerType == "response_item")
+            else if (outerType == "turn_context" && root.TryGetProperty("payload", out var context))
             {
-                ProcessResponseItem(session, root, eventAt);
+                session.Model = ReadString(context, "model");
+                session.Effort = ReadString(context, "effort");
+            }
+            else if (outerType == "response_item" && root.TryGetProperty("payload", out var item))
+            {
+                ProcessResponseItem(session, item, eventAt);
             }
         }
         catch (JsonException) { }
@@ -179,7 +213,14 @@ public sealed class CodexActivityMonitor
         switch (ReadString(payload, "type"))
         {
             case "task_started":
+                session.StartedAt = eventAt;
+                session.OutputTokens = 0;
+                session.TokensPerSecond = null;
+                session.Summary = null;
                 SetStatus(session, true, "开始处理任务…", eventAt);
+                break;
+            case "token_count":
+                ReadTokenRate(session, payload, eventAt);
                 break;
             case "agent_reasoning":
                 SetStatus(session, true, "正在思考…", eventAt);
@@ -194,7 +235,11 @@ public sealed class CodexActivityMonitor
                 if (ReadString(payload, "phase") == "commentary")
                 {
                     var message = SanitizeVisibleMessage(ReadString(payload, "message"));
-                    if (!string.IsNullOrWhiteSpace(message)) SetStatus(session, true, message, eventAt);
+                    if (!string.IsNullOrWhiteSpace(message))
+                    {
+                        session.Summary = message;
+                        SetStatus(session, true, message, eventAt);
+                    }
                 }
                 break;
             case "task_complete":
@@ -208,7 +253,20 @@ public sealed class CodexActivityMonitor
 
     private void ProcessResponseItem(TrackedSession session, JsonElement item, DateTimeOffset eventAt)
     {
-        if (ReadString(item, "type") != "custom_tool_call") return;
+        var type = ReadString(item, "type");
+        if (type == "reasoning" && item.TryGetProperty("summary", out var summary) && summary.ValueKind == JsonValueKind.Array)
+        {
+            var text = SanitizeVisibleMessage(string.Join(" ", summary.EnumerateArray()
+                .Where(part => ReadString(part, "type") == "summary_text")
+                .Select(part => ReadString(part, "text"))));
+            if (text is not null)
+            {
+                session.Summary = text;
+                SetStatus(session, true, text, eventAt);
+            }
+            return;
+        }
+        if (type is not ("custom_tool_call" or "function_call")) return;
         var name = ReadString(item, "name") ?? string.Empty;
         var status = name switch
         {
@@ -219,6 +277,27 @@ public sealed class CodexActivityMonitor
             _ => "正在使用工具…"
         };
         SetStatus(session, true, status, eventAt);
+    }
+
+    private static void ReadTokenRate(TrackedSession session, JsonElement payload, DateTimeOffset eventAt)
+    {
+        if (!payload.TryGetProperty("info", out var info) || info.ValueKind != JsonValueKind.Object ||
+            !info.TryGetProperty("total_token_usage", out var usage) ||
+            !usage.TryGetProperty("output_tokens", out var value) || !value.TryGetInt64(out var total)) return;
+        long delta = 0;
+        if (session.PreviousOutput is { } previous && total >= previous) delta = total - previous;
+        else if (info.TryGetProperty("last_token_usage", out var last) && last.ValueKind == JsonValueKind.Object &&
+                 last.TryGetProperty("output_tokens", out var lastValue) && lastValue.TryGetInt64(out var lastOutput))
+            delta = Math.Max(0, lastOutput);
+        session.PreviousOutput = total;
+        if (!session.Working || session.StartedAt is not { } started) return;
+        session.OutputTokens += delta;
+        var seconds = (eventAt - started).TotalSeconds;
+        if (delta > 0 && seconds > 0)
+        {
+            session.TokensPerSecond = session.OutputTokens / seconds;
+            session.EventAt = eventAt;
+        }
     }
 
     private void SetStatus(TrackedSession session, bool working, string status, DateTimeOffset eventAt, bool completed = false)
@@ -234,7 +313,7 @@ public sealed class CodexActivityMonitor
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
         var singleLine = string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        if (singleLine.Length > 44) singleLine = singleLine[..43] + "…";
+        if (singleLine.Length > 64) singleLine = singleLine[..63] + "…";
         return singleLine;
     }
 
@@ -243,10 +322,10 @@ public sealed class CodexActivityMonitor
         _status,
         _revision,
         _completionRevision,
-        _eventAt);
+        _eventAt) { Model = _model, Effort = _effort, TokensPerSecond = _tokensPerSecond };
 
     private static string? ReadString(JsonElement element, string name) =>
-        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
 
@@ -266,6 +345,13 @@ public sealed class CodexActivityMonitor
         public bool Working { get; set; }
         public string Status { get; set; } = "Codex 空闲中";
         public DateTimeOffset EventAt { get; set; } = DateTimeOffset.MinValue;
+        public string? Summary { get; set; }
+        public string? Model { get; set; }
+        public string? Effort { get; set; }
+        public DateTimeOffset? StartedAt { get; set; }
+        public long? PreviousOutput { get; set; }
+        public long OutputTokens { get; set; }
+        public double? TokensPerSecond { get; set; }
     }
 }
 
@@ -274,4 +360,21 @@ public sealed record CodexActivitySnapshot(
     string StatusText,
     long Revision,
     long CompletionRevision,
-    DateTimeOffset EventAt);
+    DateTimeOffset EventAt)
+{
+    public string? Model { get; init; }
+    public string? Effort { get; init; }
+    public double? TokensPerSecond { get; init; }
+    public string ModelSpeedText
+    {
+        get
+        {
+            var model = Model ?? "模型未知";
+            if (model.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase)) model = model[4..];
+            model = model.Replace("-", "");
+            var effort = string.IsNullOrWhiteSpace(Effort) ? "" : $" {Effort}";
+            var speed = TokensPerSecond is { } rate ? $"均 {rate:0.#} t/s" : "-- t/s";
+            return $"{model}{effort} · {speed}";
+        }
+    }
+}
