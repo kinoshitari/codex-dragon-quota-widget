@@ -5,7 +5,7 @@ description: Launch, stop, or inspect the local Codex, AGY and Claude companion 
 
 # 傻龙插件
 
-This plugin controls a local Windows companion widget for Codex, AGY and Claude. Its activity bubble selects Chinese public summaries/progress, shows a separate tool-status line, and displays the final public completion excerpt. Raw reasoning, encrypted content, prompts and tool arguments are not displayed. Codex and Claude quota panels show the selected source's active model, effort and average output tokens per elapsed task second (including tool waiting); unavailable speed is `-- t/s`.
+This plugin controls a local Windows companion widget for Codex, AGY and Claude. Its activity bubble selects Chinese public summaries/progress, shows a separate tool-status line, and displays the final public completion excerpt. Raw reasoning, encrypted content, prompts and tool arguments are not displayed. Codex and Claude quota panels show the selected source's active model and effort. Codex speed is the latest completed response's client-observed streaming throughput (`近 50 t/s`), not task-average or live per-token speed. It uses response `usage.output_tokens` divided by seconds from the first timed Reasoning/AgentMessage start to token_usage_record completion, excluding pre-output waiting and tool execution. Output includes reasoning and tool arguments once; response/item IDs deduplicate samples and model/turn changes reset timing. Network/response-finalization overhead remains. Missing generation timing (including current Claude transcripts) yields `-- t/s`; transcript block timestamps and session-wide API duration are not generation timings.
 
 ## Start the widget
 

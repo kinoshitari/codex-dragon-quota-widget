@@ -160,7 +160,7 @@
                         </Grid>
                         <Slider x:Name="InfoPanelDurationSlider" Minimum="2" Maximum="30" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,9,0,0" ValueChanged="InfoPanelDurationSlider_ValueChanged" />
                         <CheckBox x:Name="ShowCodexActivityBubbleCheckBox" Content="显示工作进度与完成答复气泡" Margin="0,15,0,2" />
-                        <TextBlock Text="显示 Codex / Claude Code 的中文公开进度，下方独立显示工具状态；模型和平均输出速度位于对应额度框。" TextWrapping="Wrap" FontSize="11" Foreground="#FF8C84A7" Margin="24,0,0,0" />
+                        <TextBlock Text="显示 Codex / Claude Code 的中文公开进度，下方独立显示工具状态；模型和最近一次生成速度位于额度框，缺少计时显示 --。" TextWrapping="Wrap" FontSize="11" Foreground="#FF8C84A7" Margin="24,0,0,0" />
                     </StackPanel>
                 </Border>
 

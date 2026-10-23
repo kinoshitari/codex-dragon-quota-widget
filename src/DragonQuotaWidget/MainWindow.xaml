@@ -203,8 +203,13 @@
                         </StackPanel>
                     </Grid>
                     <TextBlock x:Name="ActivityModelText" Grid.Row="5" Text="Codex 空闲中" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="SemiBold"
-                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
-                               ToolTip="当前 Codex 任务的模型与推理强度；均速为任务开始以来的输出 Token / 经过秒数（含工具等待），随 Token 记录更新。" />
+                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                        <TextBlock.ToolTip>
+                            <ToolTip MaxWidth="340">
+                                <TextBlock TextWrapping="Wrap" Text="“近”为最近一次响应的客户端生成速度，包含推理与工具参数输出，排除响应前等待和工具执行。响应完成后更新，工具运行时保留最近样本；缺少可靠计时（含当前 Claude 日志）显示 --。" />
+                            </ToolTip>
+                        </TextBlock.ToolTip>
+                    </TextBlock>
                     <Grid Grid.Row="6">
                         <TextBlock x:Name="StatusText" Text="正在读取本地数据…" Foreground="#FF9E97C4" FontSize="9.5" VerticalAlignment="Bottom" TextTrimming="CharacterEllipsis" />
                     </Grid>

@@ -102,7 +102,7 @@ public sealed class ClaudeUsageReader
                 _activity.Revision, _activity.CompletionRevision, session?.EventAt ?? DateTimeOffset.MinValue)
             {
                 Model = working ? session?.Model : null, Effort = working ? session?.Effort : null,
-                TokensPerSecond = working ? session?.Rate : null, WorkDetail = session?.WorkDetail,
+                WorkDetail = session?.WorkDetail,
                 CompletionText = session?.FinalText, CompletedAt = session?.CompletedAt
             };
             if (session?.CompletedAt is { } completed && completed != _lastCompletion)
@@ -144,9 +144,7 @@ public sealed class ClaudeUsageReader
     private static Session ReadSession(string path)
     {
         var session = new Session { Id = Path.GetFileNameWithoutExtension(path) };
-        var taskMessages = new Dictionary<string, long>();
         var tools = new Dictionary<string, string>();
-        DateTimeOffset? taskStarted = null;
         string? lastText = null;
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         using var reader = new StreamReader(stream);
@@ -182,9 +180,9 @@ public sealed class ClaudeUsageReader
                     }
                     else
                     {
-                        taskStarted = at; taskMessages.Clear(); tools.Clear(); lastText = null;
+                        tools.Clear(); lastText = null;
                         session.Working = true; session.Summary = null; session.FinalText = null; session.CompletedAt = null;
-                        session.Rate = null; session.WorkDetail = "正在准备任务";
+                        session.WorkDetail = "正在准备任务";
                     }
                     session.EventAt = at;
                 }
@@ -202,9 +200,11 @@ public sealed class ClaudeUsageReader
                             Number(usage, "output_tokens"), cached, 0);
                         if (!session.Messages.TryGetValue(messageId, out var previous) || tokens.TotalTokens >= previous.Usage.TotalTokens)
                             session.Messages[messageId] = new(at, tokens);
-                        taskMessages[messageId] = Math.Max(taskMessages.GetValueOrDefault(messageId), tokens.OutputTokens);
-                        if (taskStarted is { } start && at > start && taskMessages.Values.Sum() > 0)
-                            session.Rate = taskMessages.Values.Sum() / (at - start).TotalSeconds;
+                        // Transcript timestamps mark saved content blocks, not
+                        // first/last streamed tokens. Repeated blocks can even
+                        // carry the same FINAL token count at different times.
+                        // cost-state API time is session-wide and includes TTFT;
+                        // neither can establish a response's generation TPS.
                     }
                     foreach (var block in blocks)
                     {
@@ -248,7 +248,6 @@ public sealed class ClaudeUsageReader
         public bool Working;
         public string? Summary, WorkDetail, FinalText, Model, Effort;
         public DateTimeOffset? CompletedAt;
-        public double? Rate;
         public Dictionary<string, MessageUsage> Messages { get; } = new();
     }
 }

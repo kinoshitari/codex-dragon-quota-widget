@@ -46,7 +46,9 @@ public static class Program
             RunTest("Codex: Resumed conversation retains earlier history outside timed windows", () => TestResumedConversationHistory(testDir));
             RunTest("Placement: Quota panel mirrors inward and retains the dragon anchor", TestPanelMirrorLayout);
             RunTest("Activity: Parallel session completion is observed", () => TestActivityMonitor_ParallelSessions(testDir));
-            RunTest("Activity: Public summaries, model, average TPS and task reset", () => TestActivitySummaryAndRate(testDir));
+            RunTest("Activity: Public summaries, model, response TPS and task reset", () => TestActivitySummaryAndRate(testDir));
+            RunTest("Activity: TPS timing, response deduplication and model isolation", () => TestActivityRateBoundaries(testDir));
+            RunTest("Activity: TPS recovers before the initial tail and resets on truncation", () => TestActivityRateReplay(testDir));
             RunTest("Models: Existing Codex/Work calculation and serialization compatibility", TestUsageModels_CodexCompatibility);
             RunTest("Settings: Legacy QuotaInfo mode maps to Codex quota", TestSettings_LegacyQuotaInfoAlias);
             RunTest("Claude: Quota cache, missing buckets and expiry", TestClaudeQuotaParsing);
@@ -742,9 +744,9 @@ public static class Program
                     settings.ShowCodexActivityBubble = true;
                     Set("_codexIsWorking", true);
                     Set("_activitySource", UsageSource.Codex);
-                    Set("_latestActivityModel", "6.1sol max · 均 50 t/s");
+                    Set("_latestActivityModel", "6.1sol max · 近 50 t/s");
                     Call("UpdateActivityDetails");
-                    AssertEqual("6.1sol max · 均 50 t/s", ((System.Windows.Controls.TextBlock)window.FindName("ActivityModelText")).Text, "Model/TPS belongs to the quota panel");
+                    AssertEqual("6.1sol max · 近 50 t/s", ((System.Windows.Controls.TextBlock)window.FindName("ActivityModelText")).Text, "Model/TPS belongs to the quota panel");
                     void Capture(string name, double width, double height)
                     {
                         var root = (System.Windows.FrameworkElement)window.FindName("RootGrid");
@@ -788,7 +790,7 @@ public static class Program
                     AssertEqual(leftAnchor, window.Left + 134, "Closing the side bubble retains the left-side dragon anchor");
                     AssertEqual(bottomAnchor, window.Top + window.Height, "Closing the bubble retains the vertical character anchor");
                     settings.PinInfoPanel = true;
-                    Set("_pendingCompletion", "已完成，覆盖更新到 0.4.0，挂件已重启。中文进度下方显示工作提示；Claude 的模型与平均速度已接入额度框。");
+                    Set("_pendingCompletion", "已完成，挂件已更新并重启。中文进度下方显示工作提示；模型与最近一次生成速度位于额度框。");
                     Call("ShowCompletionIfNeeded");
                     AssertEqual(System.Windows.Visibility.Collapsed, panel.Visibility, "Pinned quota panel yields to completion");
                     var hint = (System.Windows.Controls.TextBlock)window.FindName("WorkHintText");
@@ -930,7 +932,7 @@ public static class Program
         var root = Path.Combine(rootDir, "activity-summary");
         Directory.CreateDirectory(Path.Combine(root, "sessions"));
         var path = Path.Combine(root, "sessions", "task.jsonl");
-        var start = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var start = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds());
         string Record(int seconds, string type, object payload) => JsonSerializer.Serialize(new { timestamp = start.AddSeconds(seconds), type, payload });
         string Tokens(int seconds, int total, int last) => Record(seconds, "event_msg", new
         {
@@ -941,37 +943,137 @@ public static class Program
             Tokens(-1, 10000, 200),
             CreateActivityEvent(start, "task_started"),
             Record(1, "response_item", new { type = "reasoning", summary = new[] { new { type = "summary_text", text = "正在核对日志字段，并准备调整额度框布局。" } }, encrypted_content = "never show this", content = "never show raw reasoning" }),
-            Tokens(10, 10500, 500)
+            TimedActivityItem(start, 2, 9, "reason1"),
+            ResponseUsage(start.AddSeconds(12), "resp1", 500),
+            Tokens(20, 10500, 500)
         });
         var monitor = new CodexActivityMonitor(root);
         var snapshot = monitor.Poll();
         AssertEqual("正在核对日志字段，并准备调整额度框布局。", snapshot.StatusText, "Public summary is shown");
         AssertEqual("gpt-6.1-sol", snapshot.Model, "Model comes from turn context");
         AssertEqual("max", snapshot.Effort, "Effort comes from turn context");
-        AssertEqual(50d, snapshot.TokensPerSecond, "500 new output tokens over ten task seconds");
-        AssertEqual("6.1sol max · 均 50 t/s", snapshot.ModelSpeedText, "Compact model and rate display");
-        File.AppendAllLines(path, new[] { Tokens(20, 10500, 500), Record(21, "response_item", new { type = "function_call", name = "exec_command", arguments = "never show tool input" }) });
+        AssertEqual(50d, snapshot.TokensPerSecond, "500 response tokens / ten generation seconds, excluding initial wait");
+        AssertEqual("6.1sol max · 近 50 t/s", snapshot.ModelSpeedText, "The display identifies the latest response, not a live task average");
+        File.AppendAllLines(path, new[] { Tokens(72, 10500, 500), Record(73, "response_item", new { type = "function_call", name = "exec_command", arguments = "never show tool input" }) });
         snapshot = monitor.Poll();
-        AssertEqual(50d, snapshot.TokensPerSecond, "Repeated usage is not counted again");
+        AssertEqual(50d, snapshot.TokensPerSecond, "Sixty seconds of tool waiting and repeated counters must not change generation TPS");
         Assert(snapshot.StatusText.StartsWith("正在核对"), "Tool status does not erase the summary");
         File.AppendAllLines(path, new[] {
-            Record(21, "event_msg", new { type = "agent_message", phase = "commentary", message = "已经找到字段，正在接入新的状态显示。" }),
-            Record(21, "response_item", new { type = "reasoning", summary = new[] { new { type = "summary_text", text = "**Considering internal options**" } } }),
-            Record(21, "response_item", new { type = "function_call", name = "exec_command", call_id = "cmd1", arguments = "secret argument" }),
-            Record(21, "response_item", new { type = "function_call_output", call_id = "cmd1", output = "private output" }) });
+            Record(74, "event_msg", new { type = "agent_message", phase = "commentary", message = "已经找到字段，正在接入新的状态显示。" }),
+            Record(74, "response_item", new { type = "reasoning", summary = new[] { new { type = "summary_text", text = "**Considering internal options**" } } }),
+            Record(74, "response_item", new { type = "function_call", name = "exec_command", call_id = "cmd1", arguments = "secret argument" }),
+            Record(74, "response_item", new { type = "function_call_output", call_id = "cmd1", output = "private output" }) });
         snapshot = monitor.Poll();
         AssertEqual("已经找到字段，正在接入新的状态显示。", snapshot.StatusText, "English reasoning must not replace Chinese progress");
         AssertEqual("已运行命令 · exec_command", snapshot.WorkDetail, "Work hint is separate and does not echo arguments");
-        File.AppendAllLines(path, new[] { CreateActivityEvent(start.AddSeconds(22), "task_complete"), CreateActivityEvent(start.AddSeconds(30), "task_started"), Record(31, "response_item", new { type = "reasoning", summary = Array.Empty<object>(), content = "never show raw reasoning" }) });
+        File.AppendAllLines(path, new[] { CreateActivityEvent(start.AddSeconds(75), "task_complete"), CreateActivityEvent(start.AddSeconds(80), "task_started"), Record(81, "response_item", new { type = "reasoning", summary = Array.Empty<object>(), content = "never show raw reasoning" }) });
         snapshot = monitor.Poll();
         AssertEqual("开始处理任务…", snapshot.StatusText, "New task clears old summary; raw content is ignored");
         Assert(snapshot.TokensPerSecond is null, "New task clears old rate");
-        File.AppendAllText(path, Tokens(40, 10700, 200) + Environment.NewLine);
-        AssertEqual(20d, monitor.Poll().TokensPerSecond, "New task uses only its own output");
-        File.AppendAllLines(path, new[] { Record(41, "event_msg", new { type = "agent_message", phase = "final", message = "已完成，挂件已更新。\n- 中文摘要和工作提示已经分开。" }), CreateActivityEvent(start.AddSeconds(42), "task_complete") });
+        File.AppendAllLines(path, new[] { TimedActivityItem(start, 82, 89, "reason2"), ResponseUsage(start.AddSeconds(92), "resp2", 200), Tokens(95, 10700, 200) });
+        AssertEqual(20d, monitor.Poll().TokensPerSecond, "New task uses only its own response, including all output through response completion");
+        File.AppendAllLines(path, new[] { Record(96, "event_msg", new { type = "agent_message", phase = "final", message = "已完成，挂件已更新。\n- 中文摘要和工作提示已经分开。" }), CreateActivityEvent(start.AddSeconds(97), "task_complete") });
         snapshot = monitor.Poll();
         Assert(snapshot.Model is null, "Idle display does not retain an active model");
         Assert(snapshot.CompletionText!.StartsWith("已完成，挂件已更新。"), "Completion retains the final public answer");
+    }
+
+    private static string TimedActivityItem(DateTimeOffset start, double from, double to, string id, string turn = "turn1", string type = "Reasoning") =>
+        JsonSerializer.Serialize(new { timestamp = start.AddSeconds(to), type = "event_msg", payload = new {
+            type = "item_completed", turn_id = turn, item = new { type, id },
+            started_at_ms = start.AddSeconds(from).ToUnixTimeMilliseconds(), completed_at_ms = start.AddSeconds(to).ToUnixTimeMilliseconds() } });
+
+    private static string ResponseUsage(DateTimeOffset at, string id, long tokens, string turn = "turn1") =>
+        JsonSerializer.Serialize(new { timestamp = at, type = "token_usage_record", payload = new {
+            turn_id = turn, response_id = id, usage = new { output_tokens = tokens, reasoning_output_tokens = tokens / 2 },
+            turn_token_usage = new { output_tokens = 999999L }, thread_token_usage = new { output_tokens = 99999999L } } });
+
+    private static void TestActivityRateBoundaries(string rootDir)
+    {
+        var root = Path.Combine(rootDir, "activity-rate");
+        Directory.CreateDirectory(Path.Combine(root, "sessions"));
+        var path = Path.Combine(root, "sessions", "task.jsonl");
+        var start = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeMilliseconds());
+        string Row(double seconds, string type, object payload) => JsonSerializer.Serialize(new { timestamp = start.AddSeconds(seconds), type, payload });
+        File.WriteAllLines(path, new[] {
+            Row(0, "event_msg", new { type = "task_started", turn_id = "turn1" }),
+            Row(1, "turn_context", new { model = "gpt-6.1-sol", effort = "max", turn_id = "turn1" }),
+            Row(10, "event_msg", new { type = "token_count", info = new { last_token_usage = new { output_tokens = 600 } } }),
+            ResponseUsage(start.AddSeconds(12), "no-timing", 600) });
+        var monitor = new CodexActivityMonitor(root);
+        Assert(monitor.Poll().TokensPerSecond is null, "Task timestamps and usage alone are not a generation measurement");
+
+        File.AppendAllLines(path, new[] {
+            TimedActivityItem(start, 100, 106, "r1"),
+            TimedActivityItem(start, 105, 108, "m1", type: "AgentMessage"),
+            TimedActivityItem(start, 0, 111, "tool1", type: "CommandExecution"),
+            ResponseUsage(start.AddSeconds(112), "response1", 600) });
+        var snapshot = monitor.Poll();
+        AssertEqual(50d, snapshot.TokensPerSecond, "Use the first generated item through response completion, not summed overlapping spans or tool time");
+        AssertEqual(600L, snapshot.SpeedSample!.OutputTokens, "Reasoning is already included; cumulative usage is ignored");
+        File.AppendAllLines(path, new[] {
+            TimedActivityItem(start, 100, 106, "r1"),
+            TimedActivityItem(start, 114, 116, "r2"),
+            ResponseUsage(start.AddSeconds(117), "response1", 600),
+            ResponseUsage(start.AddSeconds(118), "response2", 80) });
+        snapshot = monitor.Poll();
+        AssertEqual(20d, snapshot.TokensPerSecond, "Replayed item/response IDs do not contaminate the next response or reuse a task average");
+
+        File.AppendAllText(path, Row(119, "turn_context", new { model = "gpt-6-astra", effort = "high", turn_id = "turn1" }) + Environment.NewLine);
+        snapshot = monitor.Poll();
+        AssertEqual("gpt-6-astra", snapshot.Model, "Model switch is observed");
+        Assert(snapshot.TokensPerSecond is null, "A different model cannot inherit the previous speed");
+        File.AppendAllLines(path, new[] {
+            TimedActivityItem(start, 120, 121, "foreign", "other-turn"),
+            TimedActivityItem(start, 122, 125, "r3"),
+            ResponseUsage(start.AddSeconds(126), "foreign-response", 100000, "other-turn"),
+            ResponseUsage(start.AddSeconds(127), "response3", 100) });
+        AssertEqual(20d, monitor.Poll().TokensPerSecond, "A foreign turn must neither supply timing/tokens nor consume the current response boundary");
+
+        // A malformed/unmeasured response consumes its own timing boundary.
+        File.AppendAllLines(path, new[] {
+            TimedActivityItem(start, 130, 131, "r4"),
+            Row(132, "token_usage_record", new { usage = new { output_tokens = 100 } }),
+            ResponseUsage(start.AddSeconds(150), "missing-start", 100) });
+        Assert(monitor.Poll().TokensPerSecond is null, "Missing response ID cannot lend its start to a later response");
+        File.AppendAllLines(path, new[] {
+            Row(151, "event_msg", new { type = "item_completed", item = new { type = "Reasoning", id = "invalid" }, started_at_ms = "bad", completed_at_ms = 1 }),
+            TimedActivityItem(start, 152, 152, "zero"),
+            TimedActivityItem(start, 155, 154, "negative"),
+            ResponseUsage(start.AddSeconds(156), "invalid-time", 100),
+            TimedActivityItem(start, 157, 158, "r5"),
+            Row(159, "token_usage_record", new { response_id = "bad-usage", usage = new { output_tokens = "bad" } }),
+            TimedActivityItem(start, 160, 161, "r6"),
+            JsonSerializer.Serialize(new { type = "token_usage_record", payload = new { response_id = "missing-timestamp", usage = new { output_tokens = 100 } } }),
+            ResponseUsage(start.AddSeconds(170), "after-invalid", 100) });
+        Assert(monitor.Poll().TokensPerSecond is null, "Invalid durations, counts and timestamps must not fabricate TPS or crash");
+
+        var parallel = Path.Combine(root, "sessions", "parallel.jsonl");
+        File.WriteAllLines(parallel, new[] {
+            Row(180, "event_msg", new { type = "task_started", turn_id = "turn2" }),
+            Row(181, "turn_context", new { model = "gpt-6.1-sol", effort = "low", turn_id = "turn2" }),
+            TimedActivityItem(start, 182, 183, "parallel-r", "turn2"), ResponseUsage(start.AddSeconds(184), "parallel-response", 300, "turn2") });
+        snapshot = monitor.Poll();
+        AssertEqual(150d, snapshot.TokensPerSecond, "Parallel sessions keep separate generation windows");
+        File.AppendAllText(parallel, Row(185, "event_msg", new { type = "task_complete", turn_id = "turn2" }) + Environment.NewLine);
+        snapshot = monitor.Poll();
+        AssertEqual("gpt-6-astra", snapshot.Model, "Completion returns to the still-working session");
+        Assert(snapshot.TokensPerSecond is null, "The parallel session's speed must not leak into the selected model");
+    }
+
+    private static void TestActivityRateReplay(string rootDir)
+    {
+        var root = Path.Combine(rootDir, "activity-rate-replay");
+        Directory.CreateDirectory(Path.Combine(root, "sessions"));
+        var path = Path.Combine(root, "sessions", "task.jsonl");
+        var start = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.AddMinutes(-2).ToUnixTimeSeconds());
+        File.WriteAllLines(path, new[] {
+            CreateActivityEvent(start, "task_started"), TimedActivityItem(start, 2, 9, "r1"), ResponseUsage(start.AddSeconds(12), "response1", 500),
+            JsonSerializer.Serialize(new { type = "padding", text = new string('x', 600 * 1024) }) });
+        var monitor = new CodexActivityMonitor(root);
+        AssertEqual(50d, monitor.Poll().TokensPerSecond, "Initial-tail loading recovers the generation metadata from earlier context");
+        File.WriteAllText(path, CreateActivityEvent(start.AddSeconds(80), "task_started") + Environment.NewLine);
+        Assert(monitor.Poll().TokensPerSecond is null, "Truncation cannot retain a previous generation sample");
     }
 
     private static void TestActivityMonitor_ParallelSessions(string rootDir)
@@ -1097,7 +1199,8 @@ public static class Program
         AssertEqual(new UsageTotals(600, 500, 300, 0), usage.CurrentConversation!.Tokens, "Message blocks do not duplicate usage; cached input is included once");
         var activity = reader.Poll();
         AssertEqual("claude-opus-5-5", activity.Model, "Actual Claude model is shown");
-        AssertEqual(50d, activity.TokensPerSecond, "Task average speed uses output counts");
+        Assert(activity.TokensPerSecond is null, "Saved block timestamps cannot establish Claude streaming TPS");
+        AssertEqual("opus 5 5 max · -- t/s", activity.ModelSpeedText, "Keep the actual model while speed is unavailable");
         AssertEqual("正在核对项目文件，随后更新界面。", activity.StatusText, "Public Chinese progress is shown");
         Assert(activity.WorkDetail!.Contains("运行命令"), "Tool status is separate");
         File.AppendAllLines(path, new[] {
