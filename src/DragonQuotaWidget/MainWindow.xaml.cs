@@ -23,6 +23,8 @@ public partial class MainWindow : Window
     private const double FullBaseHeight = 440;
     private const double ArtBaseWidth = 268;
     private const double ArtBaseHeight = 300;
+    private const double BubbleHornOffset = 28;
+    private const double BubbleTopSpacing = 9;
     private const int FiveHourWindowMinutes = 300;
     private const int WeeklyWindowMinutes = 7 * 24 * 60;
     private readonly CodexUsageReader _codexReader = new();
@@ -1126,13 +1128,18 @@ public partial class MainWindow : Window
             ? ArtBaseWidth * previousScale / 2d
             : previousWidth - ArtBaseWidth * previousScale / 2d);
         var anchorBottom = Top + previousHeight;
-        // Anchor the bubble's tip by the upper, inward-facing horn. Lift the
-        // body by its measured height so longer text grows upward, not over
-        // the face. Resizing still preserves the character's desktop anchor.
+        // The bubble and dragon share a bottom anchor, so even an intermediate
+        // layout pass cannot detach the tip when the text becomes shorter.
         var hasBubble = _visibleBubbleVisual is not null;
-        if (hasBubble) InteractionBubble.Measure(new System.Windows.Size(InteractionBubble.Width + 8, double.PositiveInfinity));
+        if (hasBubble)
+        {
+            // Text/footers invalidate their parents lazily. Flush that change
+            // before measuring upward room, rather than reusing the old height.
+            InteractionBubble.UpdateLayout();
+            InteractionBubble.Measure(new System.Windows.Size(InteractionBubble.Width + 8, double.PositiveInfinity));
+        }
         var bubbleWidth = ArtBaseWidth + InteractionBubble.Width - 130;
-        var bubbleHeight = ArtBaseHeight + Math.Max(0, InteractionBubble.DesiredSize.Height - 28);
+        var bubbleHeight = Math.Max(ArtBaseHeight, InteractionBubble.DesiredSize.Height + BubbleTopSpacing);
         var baseWidth = IsInfoPanelVisible ? FullBaseWidth : hasBubble ? Math.Max(ArtBaseWidth, bubbleWidth) : ArtBaseWidth;
         var baseHeight = IsInfoPanelVisible ? FullBaseHeight : hasBubble ? bubbleHeight : ArtBaseHeight;
         Width = baseWidth * scale;
@@ -1196,7 +1203,8 @@ public partial class MainWindow : Window
             QuotaTail.RenderTransformOrigin = new Point(0.5, 0.5);
             QuotaTail.RenderTransform = new ScaleTransform(_panelOnRight ? -1 : 1, 1);
             InteractionBubble.HorizontalAlignment = _panelOnRight ? System.Windows.HorizontalAlignment.Right : System.Windows.HorizontalAlignment.Left;
-            InteractionBubble.Margin = _panelOnRight ? new Thickness(0, 9, 4, 0) : new Thickness(4, 9, 0, 0);
+            var bubbleBottom = ArtBaseHeight - BubbleHornOffset;
+            InteractionBubble.Margin = _panelOnRight ? new Thickness(0, 0, 4, bubbleBottom) : new Thickness(4, 0, 0, bubbleBottom);
             BubbleTail.HorizontalAlignment = _panelOnRight ? System.Windows.HorizontalAlignment.Left : System.Windows.HorizontalAlignment.Right;
             BubbleTail.Margin = _panelOnRight ? new Thickness(32, 0, 0, 0) : new Thickness(0, 0, 32, 0);
         }

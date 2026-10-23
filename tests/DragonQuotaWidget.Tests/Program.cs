@@ -737,6 +737,67 @@ public static class Program
                 Call("UpdateDragonMirror");
                 AssertEqual(System.Windows.HorizontalAlignment.Left, panel.HorizontalAlignment, "Right-side quota panel belongs on the left");
                 AssertEqual(System.Windows.HorizontalAlignment.Right, dragon.HorizontalAlignment, "Right-side artwork belongs on the right");
+                // Reproduce a live update after the previous bubble has already
+                // been arranged. Text changes propagate measure invalidation
+                // lazily in WPF; a cold, long-text-only preview misses this.
+                settings.ShowCodexActivityBubble = true;
+                Set("_codexIsWorking", true);
+                Set("_temporaryInfoPanelVisible", false);
+                panel.Visibility = System.Windows.Visibility.Collapsed;
+                var liveRoot = (System.Windows.FrameworkElement)window.FindName("RootGrid");
+                var liveBubble = (System.Windows.FrameworkElement)window.FindName("InteractionBubble");
+                void ArrangeLiveLayout()
+                {
+                    liveRoot.Measure(new System.Windows.Size(window.Width, window.Height));
+                    liveRoot.Arrange(new System.Windows.Rect(0, 0, window.Width, window.Height));
+                    liveRoot.UpdateLayout();
+                }
+                Call("ShowActivityBubble", string.Concat(Enumerable.Repeat("正在检查气泡布局与龙角之间的位置，确保更新后仍然贴合。", 3)));
+                ArrangeLiveLayout();
+                Call("ShowActivityBubble", "开始处理任务…");
+                ArrangeLiveLayout();
+                var liveTip = liveBubble.TranslatePoint(new System.Windows.Point(0, liveBubble.ActualHeight), liveRoot);
+                var horn = dragon.TranslatePoint(new System.Windows.Point(0, 28), liveRoot);
+                Assert(Math.Abs(liveTip.Y - horn.Y) < 1, $"Short text after a long bubble must remain attached; vertical offset is {liveTip.Y - horn.Y:0.##} DIP");
+                void CheckAttachment(string scenario)
+                {
+                    ArrangeLiveLayout();
+                    var tipY = liveBubble.TranslatePoint(new System.Windows.Point(0, liveBubble.ActualHeight), liveRoot).Y;
+                    var hornY = dragon.TranslatePoint(new System.Windows.Point(0, 28), liveRoot).Y;
+                    Assert(Math.Abs(tipY - hornY) < 1, $"{scenario}: bubble stays on the horn");
+                    Assert(Math.Abs(window.Height / settings.Scale - (liveBubble.ActualHeight + 272 + 9)) < 1,
+                        $"{scenario}: window uses the new text height, not a stale measurement");
+                }
+                foreach (var leftSide in new[] { false, true })
+                {
+                    window.Left = leftSide ? System.Windows.SystemParameters.WorkArea.Left + 20 : System.Windows.SystemParameters.WorkArea.Right - window.Width - 20;
+                    Call("UpdateDragonMirror");
+                    foreach (var scale in new[] { 0.5, 1d, 1.8 })
+                    {
+                        Call("ApplyScale", scale, false);
+                        var bottomBefore = window.Top + window.Height;
+                        var center = window.Left + (leftSide ? 134 * scale : window.Width - 134 * scale);
+                        Set("_latestWorkDetail", "正在运行命令 · exec_command");
+                        Call("ShowActivityBubble", new string('检', 96));
+                        CheckAttachment("Long summary");
+                        var longHeight = window.Height;
+                        Set("_latestWorkDetail", "正在准备任务");
+                        Call("ShowActivityBubble", "开始处理任务…");
+                        CheckAttachment("Long to short");
+                        Assert(window.Height < longHeight, "Short content releases the old upward space");
+                        Assert(Math.Abs(bottomBefore - (window.Top + window.Height)) < 1, "Content changes keep the dragon's desktop bottom");
+                        Assert(Math.Abs(center - (window.Left + (leftSide ? 134 * scale : window.Width - 134 * scale))) < 1, "Content changes keep the dragon's desktop center");
+                        Call("ShowInteractionBubble", "好模型", false, false);
+                        CheckAttachment("Interaction");
+                        Call("ShowInteractionBubble", "今日reset", false, false);
+                        CheckAttachment("Reset");
+                        Call("HideInteractionBubble", true, false);
+                    }
+                }
+                Call("ApplyScale", 1d, false);
+                window.Left = System.Windows.SystemParameters.WorkArea.Right - window.Width - 20;
+                Call("UpdateDragonMirror");
+                Call("HideInteractionBubble", true, false);
                 if (Environment.GetEnvironmentVariable("DRAGON_PREVIEW_DIR") is { Length: > 0 } previewDirectory)
                 {
                     Directory.CreateDirectory(previewDirectory);
@@ -778,11 +839,18 @@ public static class Program
                     AssertEqual(390d, window.Width, "Bubble stays close to the character rather than far to the side");
                     Assert(window.Height > 300, "Bubble grows upward above the head");
                     Capture("summary-right.png", window.Width, window.Height);
-                    var tipBottom = bubble.Margin.Top + bubble.ActualHeight;
+                    var tipBottom = bubble.TranslatePoint(new System.Windows.Point(0, bubble.ActualHeight), liveRoot).Y;
                     Assert(Math.Abs(tipBottom - (window.Height - 300 + 28)) < 1, "Bubble tip is anchored near the upper horn");
+                    Set("_latestWorkDetail", "正在准备任务");
+                    Call("ShowActivityBubble", "开始处理任务…");
+                    Capture("short-right.png", window.Width, window.Height);
+                    CheckAttachment("Short summary preview");
                     window.Left = System.Windows.SystemParameters.WorkArea.Left + 20;
                     Call("UpdateDragonMirror");
                     AssertEqual(System.Windows.HorizontalAlignment.Right, bubble.HorizontalAlignment, "Left-side dragon puts the bubble on its right");
+                    Capture("short-left.png", window.Width, window.Height);
+                    Set("_latestWorkDetail", "已运行命令 · exec_command");
+                    Call("ShowActivityBubble", "正在核对会话历史与累计 Token，并调整额度提示框中的模型名称和速度显示。");
                     Capture("summary-left.png", window.Width, window.Height);
                     var leftAnchor = window.Left + 134;
                     var bottomAnchor = window.Top + window.Height;

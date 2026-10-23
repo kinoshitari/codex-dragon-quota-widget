@@ -221,7 +221,7 @@
             <Path x:Name="QuotaTail" Data="M 229,229 C 246,242 252,255 245,268 C 232,253 218,244 202,237 Z" Fill="#F13A2D66" HorizontalAlignment="Left" VerticalAlignment="Top" Panel.ZIndex="-1" />
         </Grid>
 
-        <Grid x:Name="InteractionBubble" Width="170" Height="78" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="4,9,0,0"
+        <Grid x:Name="InteractionBubble" Width="170" Height="78" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="4,0,0,272"
               Visibility="Collapsed" Opacity="0" IsHitTestVisible="False" Panel.ZIndex="5" RenderTransformOrigin="0.5,1">
             <Grid.RenderTransform>
                 <ScaleTransform x:Name="BubbleScale" ScaleX="0.82" ScaleY="0.82" />
