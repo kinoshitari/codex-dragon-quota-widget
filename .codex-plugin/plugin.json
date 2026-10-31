@@ -1,6 +1,6 @@
 {
   "name": "codex-dragon-quota-widget",
-  "version": "0.4.3+codex.20261023",
+  "version": "0.4.4+codex.20261031",
   "description": "傻龙插件：显示 Codex、AGY 与 Claude 额度、Token、中文工作进度及完成答复。",
   "author": {
     "name": "Local developer"
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "傻龙插件",
     "shortDescription": "可自由拖动的龙娘挂件，显示 Codex、AGY、Claude 额度与本地任务状态。",
-    "longDescription": "透明置顶的桌面伴生挂件。支持 Codex、AGY、Claude 数据源、账户额度、当日/滚动 Token 消耗、整条对话累计、中文公开进度与工具状态、完成答复气泡，以及模型和最近一次生成 TPS。Claude 额度来自桌面客户端本地缓存，Token 和活动来自 Claude Code 本地会话；缺少可靠生成计时的日志显示 -- t/s。支持左右镜像、拖拽回弹、按压音效与可调显示时长。",
+    "longDescription": "透明置顶的桌面伴生挂件。支持 Codex、AGY、Claude 数据源、账户额度、当日/滚动 Token 消耗、整条对话累计、中文公开进度与工具状态、完成答复气泡，以及模型、Codex++ 同口径输出吞吐和本轮缓存命中率。Claude 额度来自桌面客户端本地缓存，Token 和活动来自 Claude Code 本地会话；缺少有效吞吐样本的日志显示 -- t/s。支持左右镜像、拖拽回弹、按压音效与可调显示时长。",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [

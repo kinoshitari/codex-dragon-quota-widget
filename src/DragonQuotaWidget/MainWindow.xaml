@@ -206,12 +206,18 @@
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
                         <TextBlock.ToolTip>
                             <ToolTip MaxWidth="340">
-                                <TextBlock TextWrapping="Wrap" Text="“近”为最近一次响应的客户端生成速度，包含推理与工具参数输出，排除响应前等待和工具执行。响应完成后更新，工具运行时保留最近样本；缺少可靠计时（含当前 Claude 日志）显示 --。" />
+                                <TextBlock TextWrapping="Wrap" Text="输出吞吐与 Codex++ 2.1.4 状态栏同口径：最近 24 条 Token 记录中，同一轮相邻记录的输出增量合计 / 对应耗时合计，包含首 Token 等待和工具执行；剔除短于 0.5 秒或长于 120 秒的区间。缺少样本时显示 --；超过两分钟未更新时淡化吞吐值。" />
                             </ToolTip>
                         </TextBlock.ToolTip>
                     </TextBlock>
                     <Grid Grid.Row="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
                         <TextBlock x:Name="StatusText" Text="正在读取本地数据…" Foreground="#FF9E97C4" FontSize="9.5" VerticalAlignment="Bottom" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="ActivityCacheText" Grid.Column="1" Text="本轮缓存命中 --" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Bottom" Margin="8,0,0,0"
+                                   ToolTip="与 Codex++ 2.1.4 状态栏一致：最近 24 条记录中，同一轮调用的缓存读取 Token 合计 / 输入 Token 合计。没有输入时显示 --，真实零命中显示 0.0%。Token 页中的缓存命中按所选时间范围或整条对话统计。" />
                     </Grid>
                 </Grid>
             </Border>

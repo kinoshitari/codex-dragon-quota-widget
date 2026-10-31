@@ -56,6 +56,7 @@ public sealed record UsageTotals(long InputTokens, long OutputTokens, long Cache
     public static UsageTotals Empty { get; } = new(0, 0, 0, 0);
     public long TotalTokens => InputTokens + OutputTokens;
     public double CacheHitRate => InputTokens <= 0 ? 0d : Math.Clamp((double)CachedInputTokens / InputTokens, 0d, 1d);
+    public string CacheHitRateText => InputTokens > 0 ? $"{CacheHitRate * 100d:0.0}%" : "--";
     public static UsageTotals operator +(UsageTotals left, UsageTotals right) => new(
         left.InputTokens + right.InputTokens,
         left.OutputTokens + right.OutputTokens,

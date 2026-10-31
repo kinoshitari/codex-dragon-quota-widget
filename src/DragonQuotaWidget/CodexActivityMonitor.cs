@@ -15,6 +15,7 @@ public sealed class CodexActivityMonitor
     private const int MaxReadBytes = 2 * 1024 * 1024;
     private const int MaxTrackedFiles = 32;
     private readonly string _sessionsRoot;
+    private readonly Func<DateTimeOffset> _clock;
     private readonly Dictionary<string, TrackedSession> _tracked = new(StringComparer.OrdinalIgnoreCase);
     private bool _working;
     private string _status = "Codex 空闲中";
@@ -23,13 +24,14 @@ public sealed class CodexActivityMonitor
     private DateTimeOffset _eventAt = DateTimeOffset.MinValue;
     private string? _model;
     private string? _effort;
-    private GenerationSpeedSample? _speedSample;
+    private CodexTurnUsage? _turnUsage;
     private string? _workDetail;
     private string? _completionText;
     private DateTimeOffset? _completedAt;
 
-    public CodexActivityMonitor(string? codexRootOverride = null)
+    public CodexActivityMonitor(string? codexRootOverride = null, Func<DateTimeOffset>? clock = null)
     {
+        _clock = clock ?? (() => DateTimeOffset.Now);
         var codexRoot = codexRootOverride;
         if (string.IsNullOrWhiteSpace(codexRoot))
         {
@@ -97,19 +99,21 @@ public sealed class CodexActivityMonitor
             .Where(session => session.Working)
             .OrderByDescending(session => session.EventAt)
             .FirstOrDefault();
+        var selected = active ?? _tracked.Values.OrderByDescending(session => session.EventAt).FirstOrDefault();
+        var selectedUsage = selected?.Metrics.Snapshot(_clock());
         var nextWorking = active is not null;
         var nextStatus = active?.Summary ?? active?.Status ?? "Codex 空闲中";
         var nextEventAt = active?.EventAt ?? _tracked.Values.Select(session => session.EventAt).DefaultIfEmpty(_eventAt).Max();
         if (_working != nextWorking || !string.Equals(_status, nextStatus, StringComparison.Ordinal) ||
-            _model != active?.Model || _effort != active?.Effort || _speedSample != active?.SpeedSample ||
+            _model != selected?.Model || _effort != selected?.Effort || _turnUsage != selectedUsage ||
             _workDetail != active?.WorkDetail)
         {
             _working = nextWorking;
             _status = nextStatus;
             _eventAt = nextEventAt;
-            _model = active?.Model;
-            _effort = active?.Effort;
-            _speedSample = active?.SpeedSample;
+            _model = selected?.Model;
+            _effort = selected?.Effort;
+            _turnUsage = selectedUsage;
             _workDetail = active?.WorkDetail;
             _revision++;
         }
@@ -129,10 +133,13 @@ public sealed class CodexActivityMonitor
                 position += Encoding.UTF8.GetByteCount(line) + 1;
                 if (line.Contains("\"turn_context\"", StringComparison.Ordinal) ||
                     line.Contains("\"task_started\"", StringComparison.Ordinal) ||
+                    line.Contains("\"turn_started\"", StringComparison.Ordinal) ||
                     line.Contains("\"task_complete\"", StringComparison.Ordinal) ||
+                    line.Contains("\"turn_complete", StringComparison.Ordinal) ||
                     line.Contains("\"turn_aborted\"", StringComparison.Ordinal) ||
-                    line.Contains("\"item_completed\"", StringComparison.Ordinal) ||
-                    line.Contains("\"token_usage_record\"", StringComparison.Ordinal)) ProcessLine(session, line);
+                    line.Contains("\"task_aborted\"", StringComparison.Ordinal) ||
+                    line.Contains("\"task_failed\"", StringComparison.Ordinal) ||
+                    line.Contains("\"token_count\"", StringComparison.Ordinal)) ProcessLine(session, line);
             }
         }
         catch (IOException) { }
@@ -155,8 +162,9 @@ public sealed class CodexActivityMonitor
             if (available <= 0) return;
             if (available > MaxReadBytes)
             {
-                // A skipped response boundary cannot be timed reliably.
-                session.ResetGeneration();
+                // A skipped turn boundary cannot be measured across the gap.
+                session.Metrics.Clear();
+                session.TurnId = null;
                 session.Offset = stream.Length - MaxReadBytes;
                 session.PartialLine = string.Empty;
                 session.SkipFirstLine = session.Offset > 0;
@@ -202,20 +210,19 @@ public sealed class CodexActivityMonitor
 
             if (outerType == "event_msg" && root.TryGetProperty("payload", out var payload) && payload.ValueKind == JsonValueKind.Object)
             {
-                ProcessEvent(session, payload, eventAt);
+                if (ReadString(payload, "type") == "token_count") ReadTokenMetrics(session, payload, hasTimestamp ? eventAt : null);
+                else ProcessEvent(session, payload, eventAt);
             }
             else if (outerType == "turn_context" && root.TryGetProperty("payload", out var context))
             {
                 var model = ReadString(context, "model");
                 var effort = ReadString(context, "effort");
-                if (session.Model != model || session.Effort != effort) session.ResetGeneration();
+                var turnId = ReadString(context, "turn_id");
+                if (session.Model != model || session.Effort != effort ||
+                    (!string.IsNullOrEmpty(turnId) && session.TurnId != turnId)) session.Metrics.Clear();
                 session.Model = model;
                 session.Effort = effort;
-                session.TurnId = ReadString(context, "turn_id") ?? session.TurnId;
-            }
-            else if (outerType == "token_usage_record" && root.TryGetProperty("payload", out var usage))
-            {
-                ReadResponseSpeed(session, usage, hasTimestamp ? eventAt : null);
+                session.TurnId = string.IsNullOrEmpty(turnId) ? session.TurnId : turnId;
             }
             else if (outerType == "response_item" && root.TryGetProperty("payload", out var item))
             {
@@ -230,19 +237,14 @@ public sealed class CodexActivityMonitor
         switch (ReadString(payload, "type"))
         {
             case "task_started":
-                session.StartedAt = eventAt;
+            case "turn_started":
                 session.TurnId = ReadString(payload, "turn_id");
-                session.ResetGeneration();
-                session.SeenResponses.Clear();
-                session.SeenItems.Clear();
+                session.Metrics.Clear();
                 session.Summary = null;
                 session.FinalText = null;
                 session.WorkDetail = "正在准备任务";
                 session.Tools.Clear();
                 SetStatus(session, true, "开始处理任务…", eventAt);
-                break;
-            case "item_completed":
-                ReadGenerationTiming(session, payload);
                 break;
             case "agent_reasoning":
                 SetStatus(session, true, "正在思考…", eventAt);
@@ -267,10 +269,16 @@ public sealed class CodexActivityMonitor
                     session.FinalText = ActivityPresentation.Chinese(ReadString(payload, "message"), 160);
                 break;
             case "task_complete":
+            case "turn_complete":
+            case "turn_completed":
+                session.TurnId ??= ReadString(payload, "turn_id");
                 session.FinalText = ActivityPresentation.Chinese(ReadString(payload, "last_agent_message"), 160) ?? session.FinalText;
                 SetStatus(session, false, "任务完成啦", eventAt, completed: true);
                 break;
             case "turn_aborted":
+            case "task_aborted":
+            case "task_failed":
+                session.TurnId ??= ReadString(payload, "turn_id");
                 SetStatus(session, false, "任务已停止", eventAt, completed: true);
                 break;
         }
@@ -331,54 +339,11 @@ public sealed class CodexActivityMonitor
     private static bool IsCurrentTurn(TrackedSession session, JsonElement payload) =>
         ReadString(payload, "turn_id") is not { } turn || session.TurnId is null || turn == session.TurnId;
 
-    private static void ReadGenerationTiming(TrackedSession session, JsonElement payload)
+    private static void ReadTokenMetrics(TrackedSession session, JsonElement payload, DateTimeOffset? at)
     {
-        if (!session.Working || !IsCurrentTurn(session, payload) ||
-            !payload.TryGetProperty("item", out var item) ||
-            ReadString(item, "type") is not ("Reasoning" or "AgentMessage") ||
-            ReadString(item, "id") is not { } id ||
-            !TryReadMilliseconds(payload, "started_at_ms", out var start) ||
-            !TryReadMilliseconds(payload, "completed_at_ms", out var end) || end <= start ||
-            session.StartedAt is not { } taskStart || start < taskStart ||
-            !session.SeenItems.Add(id)) return;
-
-        // These are client-observed model output spans, not tool durations.
-        // Multiple reasoning/text items can belong to the same API response.
-        session.GenerationStartedAt = session.GenerationStartedAt is { } previous ? (start < previous ? start : previous) : start;
-        session.GenerationCompletedAt = session.GenerationCompletedAt is { } last ? (end > last ? end : last) : end;
-    }
-
-    private static void ReadResponseSpeed(TrackedSession session, JsonElement payload, DateTimeOffset? timestamp)
-    {
-        if (!session.Working || payload.ValueKind != JsonValueKind.Object || !IsCurrentTurn(session, payload)) return;
-        var responseId = ReadString(payload, "response_id");
-        if (responseId is not null && !session.SeenResponses.Add(responseId)) return;
-
-        var start = session.GenerationStartedAt;
-        var end = session.GenerationCompletedAt;
-        session.ResetGeneration();
-        if (timestamp is not { } eventAt) return;
-        session.EventAt = eventAt;
-        if (responseId is null || start is null || end is null || eventAt < end || eventAt <= start ||
-            !payload.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object ||
-            !usage.TryGetProperty("output_tokens", out var output) ||
-            output.ValueKind != JsonValueKind.Number || !output.TryGetInt64(out var tokens) || tokens <= 0) return;
-
-        // usage is per response; turn/thread totals and token_count are not
-        // streaming samples. Token records can precede tool execution whereas
-        // token_count is often written only AFTER the tool has finished.
-        // Include all output (reasoning + text + tool arguments) once, through
-        // response completion, rather than dividing all tokens by text-only time.
-        session.SpeedSample = new(responseId, tokens, start.Value, eventAt);
-    }
-
-    private static bool TryReadMilliseconds(JsonElement element, string name, out DateTimeOffset timestamp)
-    {
-        timestamp = default;
-        if (!element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Number ||
-            !value.TryGetInt64(out var milliseconds)) return false;
-        try { timestamp = DateTimeOffset.FromUnixTimeMilliseconds(milliseconds); return true; }
-        catch (ArgumentOutOfRangeException) { return false; }
+        if (!IsCurrentTurn(session, payload) || !payload.TryGetProperty("info", out var info)) return;
+        session.Metrics.Observe(session.TurnId, at, info);
+        if (at is { } eventAt) session.EventAt = eventAt;
     }
 
     private void SetStatus(TrackedSession session, bool working, string status, DateTimeOffset eventAt, bool completed = false)
@@ -389,6 +354,8 @@ public sealed class CodexActivityMonitor
 
         if (completed)
         {
+            session.Metrics.ConfirmTurn(session.TurnId);
+            session.TurnId = null;
             _completionRevision++;
             if (_completedAt is null || eventAt >= _completedAt)
             {
@@ -403,7 +370,7 @@ public sealed class CodexActivityMonitor
         _status,
         _revision,
         _completionRevision,
-        _eventAt) { Model = _model, Effort = _effort, TokensPerSecond = _speedSample?.TokensPerSecond, SpeedSample = _speedSample,
+        _eventAt) { Model = _model, Effort = _effort, TokensPerSecond = _turnUsage?.TokensPerSecond, TurnUsage = _turnUsage,
             WorkDetail = _workDetail, CompletionText = _completionText, CompletedAt = _completedAt };
 
     private static string? ReadString(JsonElement element, string name) =>
@@ -430,29 +397,13 @@ public sealed class CodexActivityMonitor
         public string? Summary { get; set; }
         public string? Model { get; set; }
         public string? Effort { get; set; }
-        public DateTimeOffset? StartedAt { get; set; }
         public string? TurnId { get; set; }
-        public DateTimeOffset? GenerationStartedAt { get; set; }
-        public DateTimeOffset? GenerationCompletedAt { get; set; }
-        public GenerationSpeedSample? SpeedSample { get; set; }
-        public HashSet<string> SeenResponses { get; } = new(StringComparer.Ordinal);
-        public HashSet<string> SeenItems { get; } = new(StringComparer.Ordinal);
+        public CodexTurnMetrics Metrics { get; } = new();
         public string? WorkDetail { get; set; }
         public string? FinalText { get; set; }
         public Dictionary<string, string> Tools { get; } = new();
 
-        public void ResetGeneration()
-        {
-            GenerationStartedAt = null;
-            GenerationCompletedAt = null;
-            SpeedSample = null;
-        }
     }
-}
-
-public sealed record GenerationSpeedSample(string ResponseId, long OutputTokens, DateTimeOffset StartedAt, DateTimeOffset CompletedAt)
-{
-    public double TokensPerSecond => OutputTokens / (CompletedAt - StartedAt).TotalSeconds;
 }
 
 public sealed record CodexActivitySnapshot(
@@ -465,7 +416,11 @@ public sealed record CodexActivitySnapshot(
     public string? Model { get; init; }
     public string? Effort { get; init; }
     public double? TokensPerSecond { get; init; }
-    public GenerationSpeedSample? SpeedSample { get; init; }
+    public CodexTurnUsage? TurnUsage { get; init; }
+    public double? CacheHitRate => TurnUsage?.CacheHitRate;
+    public bool IsSpeedStale => TurnUsage?.IsSpeedStale == true;
+    public string SpeedText => TokensPerSecond is { } rate ? $"{Math.Round(rate, MidpointRounding.AwayFromZero):0} t/s" : "-- t/s";
+    public string CacheHitText => CacheHitRate is { } ratio ? $"本轮缓存命中 {ratio * 100:0.0}%" : "本轮缓存命中 --";
     public string? WorkDetail { get; init; }
     public string? CompletionText { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
@@ -478,8 +433,7 @@ public sealed record CodexActivitySnapshot(
             if (model.StartsWith("claude-", StringComparison.OrdinalIgnoreCase)) model = model[7..].Replace('-', ' ');
             else model = model.Replace("-", "");
             var effort = string.IsNullOrWhiteSpace(Effort) ? "" : $" {Effort}";
-            var speed = TokensPerSecond is { } rate ? $"近 {rate:0.#} t/s" : "-- t/s";
-            return $"{model}{effort} · {speed}";
+            return $"{model}{effort} · {SpeedText}";
         }
     }
 }

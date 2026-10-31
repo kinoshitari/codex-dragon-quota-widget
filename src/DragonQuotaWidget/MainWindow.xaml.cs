@@ -73,6 +73,9 @@ public partial class MainWindow : Window
     private bool _codexIsWorking;
     private string _latestActivityStatus = "正在处理任务…";
     private string _latestActivityModel = "模型未知 · -- t/s";
+    private string _latestActivityCache = "本轮缓存命中 --";
+    private bool _latestActivityHasModel;
+    private bool _latestSpeedIsStale;
     private string _latestWorkDetail = "";
     private string? _pendingCompletion;
     private bool _completionOverlay;
@@ -301,6 +304,9 @@ public partial class MainWindow : Window
             _codexIsWorking = activity.IsWorking;
             _latestActivityStatus = activity.StatusText;
             _latestActivityModel = activity.ModelSpeedText;
+            _latestActivityCache = activity.CacheHitText;
+            _latestActivityHasModel = !string.IsNullOrWhiteSpace(activity.Model);
+            _latestSpeedIsStale = activity.IsSpeedStale;
             _latestWorkDetail = activity.WorkDetail ?? "";
             UpdateActivityDetails();
             if (!_activityInitialized)
@@ -348,7 +354,21 @@ public partial class MainWindow : Window
 
     private void UpdateActivityDetails()
     {
-        ActivityModelText.Text = _codexIsWorking && _activitySource == SelectedSource ? _latestActivityModel : $"{FormatSource(SelectedSource)} 空闲中";
+        var hasActivity = _activitySource == SelectedSource && (_codexIsWorking || _latestActivityHasModel);
+        ActivityModelText.Text = hasActivity ? _latestActivityModel : $"{FormatSource(SelectedSource)} 空闲中";
+        if (hasActivity && _latestSpeedIsStale)
+        {
+            var split = _latestActivityModel.LastIndexOf(" · ", StringComparison.Ordinal);
+            if (split >= 0)
+            {
+                ActivityModelText.Inlines.Clear();
+                ActivityModelText.Inlines.Add(new System.Windows.Documents.Run(_latestActivityModel[..(split + 3)]));
+                ActivityModelText.Inlines.Add(new System.Windows.Documents.Run(_latestActivityModel[(split + 3)..])
+                    { Foreground = new SolidColorBrush(Color.FromArgb(140, 190, 179, 255)) });
+            }
+        }
+        ActivityCacheText.Text = _activitySource == SelectedSource ? _latestActivityCache : "本轮缓存命中 --";
+        ActivityCacheText.Visibility = SelectedSource == UsageSource.Codex ? Visibility.Visible : Visibility.Collapsed;
         ActivityModelText.Visibility = SelectedSource is UsageSource.Codex or UsageSource.Claude ? Visibility.Visible : Visibility.Hidden;
     }
 
@@ -482,14 +502,14 @@ public partial class MainWindow : Window
             var agy = source == UsageSource.Claude ? period.Claude : period.Agy;
             MainValueText.Text = FormatTokens(agy.TotalTokens);
             MainLabelText.Text = "输入 + 输出";
-            MainSubText.Text = $"{sourceLabel} 会话 · 缓存命中 {agy.CacheHitRate * 100d:0.0}%";
+            MainSubText.Text = $"{sourceLabel} 会话 · 缓存命中 {agy.CacheHitRateText}";
             UsageProgress.Value = agy.CacheHitRate * 100d;
             Detail1Label.Text = "输入";
             Detail1Value.Text = FormatTokens(agy.InputTokens);
             Detail2Label.Text = "输出";
             Detail2Value.Text = FormatTokens(agy.OutputTokens);
             Detail3Label.Text = "缓存命中";
-            Detail3Value.Text = $"{agy.CacheHitRate * 100d:0.0}%";
+            Detail3Value.Text = agy.CacheHitRateText;
         }
         else
         {
@@ -503,7 +523,7 @@ public partial class MainWindow : Window
             Detail2Label.Text = "输出";
             Detail2Value.Text = FormatTokens(total.OutputTokens);
             Detail3Label.Text = "缓存命中";
-            Detail3Value.Text = $"{total.CacheHitRate * 100d:0.0}%";
+            Detail3Value.Text = total.CacheHitRateText;
         }
     }
 
@@ -525,14 +545,14 @@ public partial class MainWindow : Window
             var agy = source == UsageSource.Claude ? period.Claude : period.Agy;
             MainValueText.Text = FormatTokens(agy.TotalTokens);
             MainLabelText.Text = "输入 + 输出";
-            MainSubText.Text = $"{sourceLabel} 会话 · 缓存命中 {agy.CacheHitRate * 100d:0.0}%";
+            MainSubText.Text = $"{sourceLabel} 会话 · 缓存命中 {agy.CacheHitRateText}";
             UsageProgress.Value = agy.CacheHitRate * 100d;
             Detail1Label.Text = "输入";
             Detail1Value.Text = FormatTokens(agy.InputTokens);
             Detail2Label.Text = "输出";
             Detail2Value.Text = FormatTokens(agy.OutputTokens);
             Detail3Label.Text = "缓存命中";
-            Detail3Value.Text = $"{agy.CacheHitRate * 100d:0.0}%";
+            Detail3Value.Text = agy.CacheHitRateText;
         }
         else
         {
@@ -546,7 +566,7 @@ public partial class MainWindow : Window
             Detail2Label.Text = "输出";
             Detail2Value.Text = FormatTokens(total.OutputTokens);
             Detail3Label.Text = "缓存命中";
-            Detail3Value.Text = $"{total.CacheHitRate * 100d:0.0}%";
+            Detail3Value.Text = total.CacheHitRateText;
         }
     }
 
@@ -581,7 +601,7 @@ public partial class MainWindow : Window
         Detail2Label.Text = "输出";
         Detail2Value.Text = FormatTokens(usage.OutputTokens);
         Detail3Label.Text = "缓存命中";
-        Detail3Value.Text = $"{usage.CacheHitRate * 100d:0.0}%";
+        Detail3Value.Text = usage.CacheHitRateText;
     }
 
     private static string FormatTokens(long value) => value switch

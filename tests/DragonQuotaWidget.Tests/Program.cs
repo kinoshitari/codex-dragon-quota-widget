@@ -46,8 +46,9 @@ public static class Program
             RunTest("Codex: Resumed conversation retains earlier history outside timed windows", () => TestResumedConversationHistory(testDir));
             RunTest("Placement: Quota panel mirrors inward and retains the dragon anchor", TestPanelMirrorLayout);
             RunTest("Activity: Parallel session completion is observed", () => TestActivityMonitor_ParallelSessions(testDir));
-            RunTest("Activity: Public summaries, model, response TPS and task reset", () => TestActivitySummaryAndRate(testDir));
-            RunTest("Activity: TPS timing, response deduplication and model isolation", () => TestActivityRateBoundaries(testDir));
+            RunTest("Activity: Public summaries, model, turn throughput and task reset", () => TestActivitySummaryAndRate(testDir));
+            RunTest("Activity: Codex++ weighted throughput and cache boundaries", TestCodexPlusMetrics);
+            RunTest("Activity: Turn/model isolation, completion and stale throughput", () => TestActivityRateBoundaries(testDir));
             RunTest("Activity: TPS recovers before the initial tail and resets on truncation", () => TestActivityRateReplay(testDir));
             RunTest("Models: Existing Codex/Work calculation and serialization compatibility", TestUsageModels_CodexCompatibility);
             RunTest("Settings: Legacy QuotaInfo mode maps to Codex quota", TestSettings_LegacyQuotaInfoAlias);
@@ -805,9 +806,13 @@ public static class Program
                     settings.ShowCodexActivityBubble = true;
                     Set("_codexIsWorking", true);
                     Set("_activitySource", UsageSource.Codex);
-                    Set("_latestActivityModel", "6.1sol max · 近 50 t/s");
+                    Set("_latestActivityModel", "6.1sol max · 50 t/s");
+                    Set("_latestActivityCache", "本轮缓存命中 99.9%");
+                    Set("_latestActivityHasModel", true);
                     Call("UpdateActivityDetails");
-                    AssertEqual("6.1sol max · 近 50 t/s", ((System.Windows.Controls.TextBlock)window.FindName("ActivityModelText")).Text, "Model/TPS belongs to the quota panel");
+                    AssertEqual("6.1sol max · 50 t/s", ((System.Windows.Controls.TextBlock)window.FindName("ActivityModelText")).Text, "Model/TPS belongs to the quota panel");
+                    var cacheText = (System.Windows.Controls.TextBlock)window.FindName("ActivityCacheText");
+                    AssertEqual("本轮缓存命中 99.9%", cacheText.Text, "Live turn cache belongs to the quota panel, not historical totals");
                     void Capture(string name, double width, double height)
                     {
                         var root = (System.Windows.FrameworkElement)window.FindName("RootGrid");
@@ -822,7 +827,21 @@ public static class Program
                         encoder.Save(output);
                     }
                     panel.Visibility = System.Windows.Visibility.Visible;
+                    panel.BeginAnimation(System.Windows.UIElement.OpacityProperty, null);
+                    panel.Opacity = 1;
                     Capture("quota.png", 390, 440);
+                    Assert(cacheText.ActualWidth + cacheText.Margin.Left >= cacheText.DesiredSize.Width - 1 && cacheText.ActualHeight >= cacheText.DesiredSize.Height - 1,
+                        "The turn cache value is readable and not clipped");
+                    Set("_codexIsWorking", false);
+                    Set("_latestSpeedIsStale", true);
+                    Call("UpdateActivityDetails");
+                    var modelText = (System.Windows.Controls.TextBlock)window.FindName("ActivityModelText");
+                    AssertEqual("6.1sol max · 50 t/s", modelText.Text, "Idle readings retain the model and throughput");
+                    AssertEqual(2, modelText.Inlines.Count, "Stale throughput is styled independently of the model");
+                    Capture("quota-stale.png", 390, 440);
+                    Set("_codexIsWorking", true);
+                    Set("_latestSpeedIsStale", false);
+                    Call("UpdateActivityDetails");
                     panel.Visibility = System.Windows.Visibility.Collapsed;
                     Set("_temporaryInfoPanelVisible", false);
                     Call("ApplyScale", 1d, false);
@@ -858,7 +877,7 @@ public static class Program
                     AssertEqual(leftAnchor, window.Left + 134, "Closing the side bubble retains the left-side dragon anchor");
                     AssertEqual(bottomAnchor, window.Top + window.Height, "Closing the bubble retains the vertical character anchor");
                     settings.PinInfoPanel = true;
-                    Set("_pendingCompletion", "已完成，挂件已更新并重启。中文进度下方显示工作提示；模型与最近一次生成速度位于额度框。");
+                    Set("_pendingCompletion", "已完成，挂件已更新并重启。中文进度下方显示工作提示；模型、输出吞吐与本轮缓存命中位于额度框。");
                     Call("ShowCompletionIfNeeded");
                     AssertEqual(System.Windows.Visibility.Collapsed, panel.Visibility, "Pinned quota panel yields to completion");
                     var hint = (System.Windows.Controls.TextBlock)window.FindName("WorkHintText");
@@ -1004,27 +1023,27 @@ public static class Program
         string Record(int seconds, string type, object payload) => JsonSerializer.Serialize(new { timestamp = start.AddSeconds(seconds), type, payload });
         string Tokens(int seconds, int total, int last) => Record(seconds, "event_msg", new
         {
-            type = "token_count", info = new { total_token_usage = new { output_tokens = total }, last_token_usage = new { output_tokens = last } }
+            type = "token_count", info = new { total_token_usage = new { output_tokens = total }, last_token_usage = new { input_tokens = 1000, cached_input_tokens = 800, output_tokens = last } }
         });
         File.WriteAllLines(path, new[] {
             Record(-1, "turn_context", new { model = "gpt-6.1-sol", effort = "max" }),
             Tokens(-1, 10000, 200),
-            CreateActivityEvent(start, "task_started"),
+            Record(0, "event_msg", new { type = "task_started", turn_id = "turn1" }),
             Record(1, "response_item", new { type = "reasoning", summary = new[] { new { type = "summary_text", text = "正在核对日志字段，并准备调整额度框布局。" } }, encrypted_content = "never show this", content = "never show raw reasoning" }),
-            TimedActivityItem(start, 2, 9, "reason1"),
             ResponseUsage(start.AddSeconds(12), "resp1", 500),
-            Tokens(20, 10500, 500)
+            Tokens(10, 10100, 100), Tokens(20, 10600, 500)
         });
         var monitor = new CodexActivityMonitor(root);
         var snapshot = monitor.Poll();
         AssertEqual("正在核对日志字段，并准备调整额度框布局。", snapshot.StatusText, "Public summary is shown");
         AssertEqual("gpt-6.1-sol", snapshot.Model, "Model comes from turn context");
         AssertEqual("max", snapshot.Effort, "Effort comes from turn context");
-        AssertEqual(50d, snapshot.TokensPerSecond, "500 response tokens / ten generation seconds, excluding initial wait");
-        AssertEqual("6.1sol max · 近 50 t/s", snapshot.ModelSpeedText, "The display identifies the latest response, not a live task average");
-        File.AppendAllLines(path, new[] { Tokens(72, 10500, 500), Record(73, "response_item", new { type = "function_call", name = "exec_command", arguments = "never show tool input" }) });
+        AssertEqual(50d, snapshot.TokensPerSecond, "Same-turn cumulative output delta divided by event interval");
+        AssertEqual("6.1sol max · 50 t/s", snapshot.ModelSpeedText, "Compact throughput display");
+        AssertEqual("本轮缓存命中 80.0%", snapshot.CacheHitText, "Turn cache ratio is displayed separately");
+        File.AppendAllLines(path, new[] { Tokens(72, 10600, 500), Record(73, "response_item", new { type = "function_call", name = "exec_command", arguments = "never show tool input" }) });
         snapshot = monitor.Poll();
-        AssertEqual(50d, snapshot.TokensPerSecond, "Sixty seconds of tool waiting and repeated counters must not change generation TPS");
+        AssertEqual(50d, snapshot.TokensPerSecond, "Repeated cumulative output does not add a throughput interval");
         Assert(snapshot.StatusText.StartsWith("正在核对"), "Tool status does not erase the summary");
         File.AppendAllLines(path, new[] {
             Record(74, "event_msg", new { type = "agent_message", phase = "commentary", message = "已经找到字段，正在接入新的状态显示。" }),
@@ -1034,99 +1053,132 @@ public static class Program
         snapshot = monitor.Poll();
         AssertEqual("已经找到字段，正在接入新的状态显示。", snapshot.StatusText, "English reasoning must not replace Chinese progress");
         AssertEqual("已运行命令 · exec_command", snapshot.WorkDetail, "Work hint is separate and does not echo arguments");
-        File.AppendAllLines(path, new[] { CreateActivityEvent(start.AddSeconds(75), "task_complete"), CreateActivityEvent(start.AddSeconds(80), "task_started"), Record(81, "response_item", new { type = "reasoning", summary = Array.Empty<object>(), content = "never show raw reasoning" }) });
+        File.AppendAllLines(path, new[] { CreateActivityEvent(start.AddSeconds(75), "task_complete"), Record(80, "event_msg", new { type = "task_started", turn_id = "turn2" }), Record(81, "response_item", new { type = "reasoning", summary = Array.Empty<object>(), content = "never show raw reasoning" }) });
         snapshot = monitor.Poll();
         AssertEqual("开始处理任务…", snapshot.StatusText, "New task clears old summary; raw content is ignored");
         Assert(snapshot.TokensPerSecond is null, "New task clears old rate");
-        File.AppendAllLines(path, new[] { TimedActivityItem(start, 82, 89, "reason2"), ResponseUsage(start.AddSeconds(92), "resp2", 200), Tokens(95, 10700, 200) });
-        AssertEqual(20d, monitor.Poll().TokensPerSecond, "New task uses only its own response, including all output through response completion");
-        File.AppendAllLines(path, new[] { Record(96, "event_msg", new { type = "agent_message", phase = "final", message = "已完成，挂件已更新。\n- 中文摘要和工作提示已经分开。" }), CreateActivityEvent(start.AddSeconds(97), "task_complete") });
+        File.AppendAllLines(path, new[] { Tokens(95, 10700, 100) });
+        Assert(monitor.Poll().TokensPerSecond is null, "One call in a new turn is insufficient for throughput");
+        File.AppendAllLines(path, new[] { Tokens(100, 10800, 100) });
+        AssertEqual(20d, monitor.Poll().TokensPerSecond, "New task uses only intervals in the new turn");
+        File.AppendAllLines(path, new[] { Record(101, "event_msg", new { type = "agent_message", phase = "final", message = "已完成，挂件已更新。\n- 中文摘要和工作提示已经分开。" }), CreateActivityEvent(start.AddSeconds(102), "task_complete") });
         snapshot = monitor.Poll();
-        Assert(snapshot.Model is null, "Idle display does not retain an active model");
+        Assert(!snapshot.IsWorking && snapshot.Model == "gpt-6.1-sol", "Completion retains measured model metadata without claiming it is working");
         Assert(snapshot.CompletionText!.StartsWith("已完成，挂件已更新。"), "Completion retains the final public answer");
     }
 
-    private static string TimedActivityItem(DateTimeOffset start, double from, double to, string id, string turn = "turn1", string type = "Reasoning") =>
-        JsonSerializer.Serialize(new { timestamp = start.AddSeconds(to), type = "event_msg", payload = new {
-            type = "item_completed", turn_id = turn, item = new { type, id },
-            started_at_ms = start.AddSeconds(from).ToUnixTimeMilliseconds(), completed_at_ms = start.AddSeconds(to).ToUnixTimeMilliseconds() } });
+    private static string ActivityTokens(DateTimeOffset at, long output, long input = 1000, long cached = 900, string? turn = null) =>
+        JsonSerializer.Serialize(new { timestamp = at, type = "event_msg", payload = new {
+            type = "token_count", turn_id = turn, info = new { total_token_usage = new { output_tokens = output },
+                last_token_usage = new { input_tokens = input, cached_input_tokens = cached, output_tokens = 100 } } } });
 
     private static string ResponseUsage(DateTimeOffset at, string id, long tokens, string turn = "turn1") =>
         JsonSerializer.Serialize(new { timestamp = at, type = "token_usage_record", payload = new {
             turn_id = turn, response_id = id, usage = new { output_tokens = tokens, reasoning_output_tokens = tokens / 2 },
             turn_token_usage = new { output_tokens = 999999L }, thread_token_usage = new { output_tokens = 99999999L } } });
 
+    private static void TestCodexPlusMetrics()
+    {
+        var at = DateTimeOffset.FromUnixTimeSeconds(1700000000);
+        var metrics = new CodexTurnMetrics();
+        void Add(double seconds, long output, long input = 1000, long cached = 0, string? turn = "one")
+        {
+            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(new {
+                last_token_usage = new { input_tokens = input, cached_input_tokens = cached, output_tokens = 1 },
+                total_token_usage = new { output_tokens = output } }));
+            metrics.Observe(turn, at.AddSeconds(seconds), doc.RootElement);
+        }
+        Assert(metrics.Snapshot(at) is null, "No usage is unknown rather than zero");
+        Add(0, 100, 100, 40);
+        Assert(metrics.Snapshot(at)!.TokensPerSecond is null, "The first event has no elapsed interval");
+        Add(2, 200, 900, 810);
+        AssertEqual(50d, metrics.Snapshot(at)!.TokensPerSecond, "First interval");
+        AssertEqual(0.85, metrics.Snapshot(at)!.CacheHitRate, "Cache is input-weighted, not an average of percentages");
+        Add(6, 800);
+        Assert(Math.Abs(metrics.Snapshot(at)!.TokensPerSecond!.Value - 700d / 6) < 1e-9, "Throughput is total deltas / total seconds, not averaged speeds");
+        Add(6.2, 900); // batch write
+        Add(207, 1000); // long pause
+        AssertEqual(700L, metrics.Snapshot(at)!.MeasuredOutputTokens, "Rejected intervals remove BOTH tokens and time");
+        AssertEqual(6d, metrics.Snapshot(at)!.MeasuredSeconds, "Rejected timing is not retained");
+        Add(208, 1000); // no growth, still the next interval baseline
+        Add(210, 1100);
+        AssertEqual(100d, metrics.Snapshot(at)!.TokensPerSecond, "No-growth records move the adjacent baseline but add no sample");
+        Add(210.5, 1050); // cumulative reset / non-monotonic interval
+        Add(211, 1100);
+        AssertEqual(100d, metrics.Snapshot(at)!.TokensPerSecond, "A counter rollback interval is omitted without reusing its preceding output");
+        Add(211, 1200, 1000, 0, "two");
+        Assert(metrics.Snapshot(at)!.TokensPerSecond is null, "A monotonic session counter cannot bridge turns");
+        AssertEqual(0d, metrics.Snapshot(at)!.CacheHitRate, "A new turn's genuine zero cache hit is retained");
+        Add(212, 1300, 100, 100, null);
+        Add(214, 1400, 100, 25, null);
+        Assert(metrics.Snapshot(at)!.TokensPerSecond is null, "Missing turn IDs cannot combine intervals");
+        AssertEqual(0.25, metrics.Snapshot(at)!.CacheHitRate, "Missing turn ID uses only the latest call's cache ratio");
+        metrics.ConfirmTurn("confirmed");
+        AssertEqual(50d, metrics.Snapshot(at)!.TokensPerSecond, "A terminal turn ID can confirm earlier unassigned records");
+        metrics.Clear();
+        Add(0, 0, 0, 100);
+        Assert(metrics.Snapshot(at)!.CacheHitRate is null, "No input means unknown cache hit, not zero");
+        Add(0.5, 10, 10, 100);
+        Add(120.5, 1210, 10, -10);
+        AssertEqual(1210d / 120.5, metrics.Snapshot(at)!.TokensPerSecond, "0.5 and 120 seconds are inclusive boundaries");
+        AssertEqual(0.5, metrics.Snapshot(at)!.CacheHitRate, "Cached input is clamped per call");
+        Assert(!metrics.Snapshot(at.AddSeconds(240.5))!.IsSpeedStale, "Exactly two minutes remains fresh");
+        Assert(metrics.Snapshot(at.AddSeconds(240.6))!.IsSpeedStale, "Older throughput is stale, while cache remains valid");
+        metrics.Clear();
+        Add(0, 0, 100000, 100000);
+        for (var i = 1; i <= 24; i++) Add(i, i * 10, 100, 0);
+        var limited = metrics.Snapshot(at)!;
+        AssertEqual(2400L, limited.InputTokens, "The status line uses the latest 24 records like Codex++");
+        AssertEqual(230L, limited.MeasuredOutputTokens, "24 records contain 23 adjacent intervals");
+        AssertEqual(10d, limited.TokensPerSecond, "The bounded window keeps the correct weighted rate");
+        AssertEqual("--", UsageTotals.Empty.CacheHitRateText, "Empty period cache data is not fabricated as zero percent");
+        AssertEqual("0.0%", new UsageTotals(100, 10, 0, 0).CacheHitRateText, "Real zero cache hit still displays zero");
+    }
+
     private static void TestActivityRateBoundaries(string rootDir)
     {
         var root = Path.Combine(rootDir, "activity-rate");
         Directory.CreateDirectory(Path.Combine(root, "sessions"));
         var path = Path.Combine(root, "sessions", "task.jsonl");
-        var start = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeMilliseconds());
+        var start = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeSeconds());
+        var now = start.AddSeconds(60);
         string Row(double seconds, string type, object payload) => JsonSerializer.Serialize(new { timestamp = start.AddSeconds(seconds), type, payload });
+        string Tokens(double seconds, long output, string? turn = null) => ActivityTokens(start.AddSeconds(seconds), output, turn: turn);
         File.WriteAllLines(path, new[] {
             Row(0, "event_msg", new { type = "task_started", turn_id = "turn1" }),
             Row(1, "turn_context", new { model = "gpt-6.1-sol", effort = "max", turn_id = "turn1" }),
-            Row(10, "event_msg", new { type = "token_count", info = new { last_token_usage = new { output_tokens = 600 } } }),
-            ResponseUsage(start.AddSeconds(12), "no-timing", 600) });
-        var monitor = new CodexActivityMonitor(root);
-        Assert(monitor.Poll().TokensPerSecond is null, "Task timestamps and usage alone are not a generation measurement");
-
-        File.AppendAllLines(path, new[] {
-            TimedActivityItem(start, 100, 106, "r1"),
-            TimedActivityItem(start, 105, 108, "m1", type: "AgentMessage"),
-            TimedActivityItem(start, 0, 111, "tool1", type: "CommandExecution"),
-            ResponseUsage(start.AddSeconds(112), "response1", 600) });
+            ResponseUsage(start.AddSeconds(5), "response1", 99999), Tokens(10, 100), Tokens(20, 600) });
+        var monitor = new CodexActivityMonitor(root, () => now);
         var snapshot = monitor.Poll();
-        AssertEqual(50d, snapshot.TokensPerSecond, "Use the first generated item through response completion, not summed overlapping spans or tool time");
-        AssertEqual(600L, snapshot.SpeedSample!.OutputTokens, "Reasoning is already included; cumulative usage is ignored");
-        File.AppendAllLines(path, new[] {
-            TimedActivityItem(start, 100, 106, "r1"),
-            TimedActivityItem(start, 114, 116, "r2"),
-            ResponseUsage(start.AddSeconds(117), "response1", 600),
-            ResponseUsage(start.AddSeconds(118), "response2", 80) });
+        AssertEqual(50d, snapshot.TokensPerSecond, "Use token_count, not timed response output or historical totals");
+        AssertEqual(0.9, snapshot.CacheHitRate, "The status line has current-turn cache data");
+        File.AppendAllText(path, Row(21, "turn_context", new { model = "gpt-6-astra", effort = "high", turn_id = "turn1" }) + Environment.NewLine);
+        Assert(monitor.Poll().TokensPerSecond is null, "A new model cannot inherit another model's measurement");
+        File.AppendAllLines(path, new[] { Tokens(22, 1000), Tokens(23, 99999, "other-turn"), Tokens(27, 1100) });
         snapshot = monitor.Poll();
-        AssertEqual(20d, snapshot.TokensPerSecond, "Replayed item/response IDs do not contaminate the next response or reuse a task average");
-
-        File.AppendAllText(path, Row(119, "turn_context", new { model = "gpt-6-astra", effort = "high", turn_id = "turn1" }) + Environment.NewLine);
-        snapshot = monitor.Poll();
-        AssertEqual("gpt-6-astra", snapshot.Model, "Model switch is observed");
-        Assert(snapshot.TokensPerSecond is null, "A different model cannot inherit the previous speed");
-        File.AppendAllLines(path, new[] {
-            TimedActivityItem(start, 120, 121, "foreign", "other-turn"),
-            TimedActivityItem(start, 122, 125, "r3"),
-            ResponseUsage(start.AddSeconds(126), "foreign-response", 100000, "other-turn"),
-            ResponseUsage(start.AddSeconds(127), "response3", 100) });
-        AssertEqual(20d, monitor.Poll().TokensPerSecond, "A foreign turn must neither supply timing/tokens nor consume the current response boundary");
-
-        // A malformed/unmeasured response consumes its own timing boundary.
-        File.AppendAllLines(path, new[] {
-            TimedActivityItem(start, 130, 131, "r4"),
-            Row(132, "token_usage_record", new { usage = new { output_tokens = 100 } }),
-            ResponseUsage(start.AddSeconds(150), "missing-start", 100) });
-        Assert(monitor.Poll().TokensPerSecond is null, "Missing response ID cannot lend its start to a later response");
-        File.AppendAllLines(path, new[] {
-            Row(151, "event_msg", new { type = "item_completed", item = new { type = "Reasoning", id = "invalid" }, started_at_ms = "bad", completed_at_ms = 1 }),
-            TimedActivityItem(start, 152, 152, "zero"),
-            TimedActivityItem(start, 155, 154, "negative"),
-            ResponseUsage(start.AddSeconds(156), "invalid-time", 100),
-            TimedActivityItem(start, 157, 158, "r5"),
-            Row(159, "token_usage_record", new { response_id = "bad-usage", usage = new { output_tokens = "bad" } }),
-            TimedActivityItem(start, 160, 161, "r6"),
-            JsonSerializer.Serialize(new { type = "token_usage_record", payload = new { response_id = "missing-timestamp", usage = new { output_tokens = 100 } } }),
-            ResponseUsage(start.AddSeconds(170), "after-invalid", 100) });
-        Assert(monitor.Poll().TokensPerSecond is null, "Invalid durations, counts and timestamps must not fabricate TPS or crash");
-
+        AssertEqual(20d, snapshot.TokensPerSecond, "Foreign-turn records are isolated");
         var parallel = Path.Combine(root, "sessions", "parallel.jsonl");
         File.WriteAllLines(parallel, new[] {
-            Row(180, "event_msg", new { type = "task_started", turn_id = "turn2" }),
-            Row(181, "turn_context", new { model = "gpt-6.1-sol", effort = "low", turn_id = "turn2" }),
-            TimedActivityItem(start, 182, 183, "parallel-r", "turn2"), ResponseUsage(start.AddSeconds(184), "parallel-response", 300, "turn2") });
+            Row(30, "event_msg", new { type = "turn_started", turn_id = "turn2" }),
+            Row(31, "turn_context", new { model = "gpt-6.1-sol", effort = "low", turn_id = "turn2" }),
+            Tokens(32, 100), Tokens(34, 400) });
+        AssertEqual(150d, monitor.Poll().TokensPerSecond, "Parallel sessions have separate throughput windows");
+        File.AppendAllText(parallel, Row(35, "event_msg", new { type = "turn_completed", turn_id = "turn2" }) + Environment.NewLine);
         snapshot = monitor.Poll();
-        AssertEqual(150d, snapshot.TokensPerSecond, "Parallel sessions keep separate generation windows");
-        File.AppendAllText(parallel, Row(185, "event_msg", new { type = "task_complete", turn_id = "turn2" }) + Environment.NewLine);
+        AssertEqual("gpt-6-astra", snapshot.Model, "The still-working session takes priority");
+        AssertEqual(20d, snapshot.TokensPerSecond, "Parallel completion cannot leak model metrics");
+        File.AppendAllText(path, Row(40, "event_msg", new { type = "task_complete", turn_id = "turn1" }) + Environment.NewLine);
         snapshot = monitor.Poll();
-        AssertEqual("gpt-6-astra", snapshot.Model, "Completion returns to the still-working session");
-        Assert(snapshot.TokensPerSecond is null, "The parallel session's speed must not leak into the selected model");
+        Assert(!snapshot.IsWorking && snapshot.TokensPerSecond == 20d, "Completion retains last-turn readings without claiming active work");
+        var revision = snapshot.Revision;
+        now = start.AddSeconds(148);
+        snapshot = monitor.Poll();
+        Assert(snapshot.IsSpeedStale && snapshot.Revision > revision, "Idle throughput becomes stale without a new log record");
+        AssertEqual(0.9, snapshot.CacheHitRate, "Only throughput is stale; cache is still the last turn's value");
+        File.AppendAllLines(path, new[] {
+            Row(150, "event_msg", new { type = "task_started", turn_id = "turn3" }),
+            Tokens(151, 5000), Tokens(152, 5100) });
+        AssertEqual(100d, monitor.Poll().TokensPerSecond, "Turn restart never includes the preceding turn");
     }
 
     private static void TestActivityRateReplay(string rootDir)
@@ -1136,12 +1188,13 @@ public static class Program
         var path = Path.Combine(root, "sessions", "task.jsonl");
         var start = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.AddMinutes(-2).ToUnixTimeSeconds());
         File.WriteAllLines(path, new[] {
-            CreateActivityEvent(start, "task_started"), TimedActivityItem(start, 2, 9, "r1"), ResponseUsage(start.AddSeconds(12), "response1", 500),
+            JsonSerializer.Serialize(new { timestamp = start, type = "event_msg", payload = new { type = "task_started", turn_id = "turn1" } }),
+            ActivityTokens(start.AddSeconds(10), 100), ActivityTokens(start.AddSeconds(20), 600),
             JsonSerializer.Serialize(new { type = "padding", text = new string('x', 600 * 1024) }) });
         var monitor = new CodexActivityMonitor(root);
-        AssertEqual(50d, monitor.Poll().TokensPerSecond, "Initial-tail loading recovers the generation metadata from earlier context");
+        AssertEqual(50d, monitor.Poll().TokensPerSecond, "Initial-tail loading recovers token records before the tail");
         File.WriteAllText(path, CreateActivityEvent(start.AddSeconds(80), "task_started") + Environment.NewLine);
-        Assert(monitor.Poll().TokensPerSecond is null, "Truncation cannot retain a previous generation sample");
+        Assert(monitor.Poll().TokensPerSecond is null, "Truncation cannot retain a previous throughput sample");
     }
 
     private static void TestActivityMonitor_ParallelSessions(string rootDir)
